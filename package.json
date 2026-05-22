@@ -1,0 +1,22 @@
+{
+  "name": "cahaya-phone-crm",
+  "version": "1.0.0",
+  "description": "WhatsApp CRM System with Customer Management and Admin Dashboard",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "migrate": "cd backend && node migrate.js",
+    "start": "cd backend && node server.js",
+    "postinstall": "cd backend && npm install",
+    "dev": "cd backend && node server.js"
+  },
+  "keywords": [
+    "crm",
+    "whatsapp",
+    "customer-management",
+    "webhook"
+  ],
+  "author": "Cahaya Phone",
+  "license": "MIT"
+}

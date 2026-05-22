@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Admin Login - Cahaya Phone Database</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#B91C1C">
+    <link rel="icon" type="image/png" href="icons/icon-192.png">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CP Admin">
+    <meta name="mobile-web-app-capable" content="yes">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@300;400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body class="login-page">
+    <div class="login-container">
+        <div class="login-box">
+            <div class="login-header">
+                <div style="margin-bottom:16px;">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#B91C1C" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </div>
+                <h1>Admin Login</h1>
+                <p>Cahaya Phone Database</p>
+            </div>
+
+            <div id="loginAlert" class="alert"></div>
+
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="username" required autofocus>
+                </div>
+
+                <div class="form-group">
+                    <label>Password</label>
+                    <div style="position:relative;">
+                        <input type="password" id="password" required autocomplete="current-password" style="padding-right:44px;">
+                        <button type="button" id="togglePassword" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;padding:4px;cursor:pointer;color:#9A918A;display:flex;" title="Tampilkan password">
+                            <svg id="eyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <button type="submit" id="loginBtn" class="btn-primary">
+                    Login
+                </button>
+            </form>
+
+            <div style="text-align:center;margin-top:16px;">
+                <a href="forgot.html" style="font-size:13px;color:#8C8078;text-decoration:none;transition:color 0.2s;" onmouseover="this.style.color='#B91C1C'" onmouseout="this.style.color='#8C8078'">Lupa password?</a>
+            </div>
+        </div>
+
+        <!-- Download App banner (mobile only, hidden by default) -->
+        <div id="installAppCard" class="install-app-card" hidden>
+            <div class="install-app-icon">
+                <img src="icons/icon-192.png" alt="CP Admin">
+            </div>
+            <div class="install-app-body">
+                <div class="install-app-title">Download App Admin</div>
+                <div class="install-app-desc" id="installAppDesc">Install di home screen biar lebih cepat & fullscreen.</div>
+            </div>
+            <button type="button" id="installAppBtn" class="install-app-btn">Install</button>
+        </div>
+    </div>
+
+    <!-- Safari install instructions modal (iOS/iPadOS + macOS) -->
+    <div id="iosInstallModal" class="ios-modal" hidden>
+        <div class="ios-modal-backdrop" data-close-ios></div>
+        <div class="ios-modal-box">
+            <button type="button" class="ios-modal-close" data-close-ios aria-label="Tutup">&times;</button>
+            <div class="ios-modal-header">
+                <img src="icons/icon-192.png" alt="CP Admin">
+                <h3>Install App Admin</h3>
+                <p id="iosModalSubtitle">Tambahkan ke Home Screen iPhone/iPad kamu</p>
+            </div>
+
+            <!-- iPhone / iPad steps -->
+            <ol class="ios-modal-steps" data-platform="ios">
+                <li>
+                    <span class="ios-step-num">1</span>
+                    <div>
+                        Tap tombol <strong>Share</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin:0 2px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                        di bagian bawah Safari.
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">2</span>
+                    <div>Scroll, lalu pilih <strong>"Add to Home Screen"</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A1412" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-left:4px;"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">3</span>
+                    <div>Tap <strong>"Add"</strong> di pojok kanan atas.</div>
+                </li>
+            </ol>
+
+            <!-- macOS Safari steps -->
+            <ol class="ios-modal-steps" data-platform="mac" hidden>
+                <li>
+                    <span class="ios-step-num">1</span>
+                    <div>
+                        Klik tombol <strong>Share</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin:0 2px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                        di toolbar Safari (atau menu <strong>File</strong>).
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">2</span>
+                    <div>Pilih <strong>"Add to Dock"</strong>.</div>
+                </li>
+                <li>
+                    <span class="ios-step-num">3</span>
+                    <div>Klik <strong>"Add"</strong> untuk konfirmasi — app muncul di Dock.</div>
+                </li>
+            </ol>
+
+            <!-- Desktop Chrome/Edge fallback steps (when beforeinstallprompt didn't fire — usually means app already installed) -->
+            <ol class="ios-modal-steps" data-platform="desktop" hidden>
+                <li>
+                    <span class="ios-step-num">1</span>
+                    <div>
+                        Cek icon <strong>install</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin:0 2px;"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                        di kanan address bar — klik, lalu pilih <strong>Install</strong>.
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">2</span>
+                    <div>Atau buka menu <strong>⋮</strong> di pojok kanan atas → <strong>Cast, save, and share</strong> → <strong>Install page as app</strong>.</div>
+                </li>
+                <li>
+                    <span class="ios-step-num">3</span>
+                    <div style="color:var(--text-muted);font-size:12.5px;">Kalau icon Install gak muncul, kemungkinan app <strong>udah ke-install</strong> sebelumnya. Buka <code style="background:var(--bg-input);padding:1px 5px;border-radius:4px;font-size:11.5px;">chrome://apps</code> untuk cek.</div>
+                </li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('togglePassword').addEventListener('click', function() {
+            const pw = document.getElementById('password');
+            const icon = document.getElementById('eyeIcon');
+            if (pw.type === 'password') {
+                pw.type = 'text';
+                icon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+                this.title = 'Sembunyikan password';
+            } else {
+                pw.type = 'password';
+                icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+                this.title = 'Tampilkan password';
+            }
+        });
+    </script>
+    <script src="/config.js"></script>
+    <script src="admin.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/admin/service-worker.js', { scope: '/admin/' })
+                    .catch((err) => console.warn('SW registration failed:', err));
+            });
+        }
+    </script>
+
+    <script>
+    (function() {
+        const ua = navigator.userAgent || '';
+        const isIPad = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isIPhone = /iPhone|iPod/.test(ua);
+        const isIOS = isIPad || isIPhone;
+        const isAndroid = /Android/.test(ua);
+        const isMac = /Macintosh/.test(ua) && !isIOS;
+        const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|Edg|Edge|OPR/.test(ua);
+        const isMacSafari = isMac && isSafari;
+        const isFirefox = /Firefox|FxiOS/.test(ua);
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+        if (isStandalone) return;
+
+        const card = document.getElementById('installAppCard');
+        const btn = document.getElementById('installAppBtn');
+        const desc = document.getElementById('installAppDesc');
+        const iosModal = document.getElementById('iosInstallModal');
+
+        let deferredPrompt = null;
+        const isDesktop = !isIOS && !isAndroid;
+
+        const iosSteps = iosModal.querySelector('[data-platform="ios"]');
+        const macSteps = iosModal.querySelector('[data-platform="mac"]');
+        const desktopSteps = iosModal.querySelector('[data-platform="desktop"]');
+        const subtitle = document.getElementById('iosModalSubtitle');
+
+        function showModal(platform) {
+            iosSteps.hidden = platform !== 'ios';
+            macSteps.hidden = platform !== 'mac';
+            desktopSteps.hidden = platform !== 'desktop';
+            if (platform === 'mac') subtitle.textContent = 'Tambahkan ke Dock Mac kamu';
+            else if (platform === 'desktop') subtitle.textContent = 'Cara install di Chrome / Edge';
+            else subtitle.textContent = 'Tambahkan ke Home Screen iPhone/iPad kamu';
+            iosModal.hidden = false;
+            document.body.style.overflow = 'hidden';
+        }
+
+        iosModal.querySelectorAll('[data-close-ios]').forEach(el => {
+            el.addEventListener('click', () => {
+                iosModal.hidden = true;
+                document.body.style.overflow = '';
+            });
+        });
+
+        // iOS / iPadOS / macOS Safari: Safari doesn't fire beforeinstallprompt — show step modal
+        if (isIOS || isMacSafari) {
+            desc.textContent = isIOS
+                ? 'Tap tombol Install untuk lihat caranya.'
+                : 'Klik Install untuk lihat caranya di Safari.';
+            card.hidden = false;
+
+            btn.addEventListener('click', () => showModal(isMacSafari ? 'mac' : 'ios'));
+            return;
+        }
+
+        // Firefox doesn't support PWA install at all — keep the banner hidden
+        if (isFirefox) {
+            console.info('[install] Firefox: PWA install not supported');
+            return;
+        }
+
+        // Chrome / Edge (desktop + Android): native install via beforeinstallprompt
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            desc.textContent = isDesktop
+                ? 'Install langsung biar bisa dibuka kayak app, tanpa tab browser.'
+                : 'Install di home screen biar lebih cepat & fullscreen.';
+            card.hidden = false;
+            console.info('[install] beforeinstallprompt captured — ready to prompt');
+        });
+
+        btn.addEventListener('click', async () => {
+            console.info('[install] Install clicked. deferredPrompt =', !!deferredPrompt);
+            if (!deferredPrompt) {
+                // Event never fired — usually means app is already installed, or browser
+                // doesn't meet PWA criteria right now. Show the desktop/android steps modal.
+                showModal(isDesktop ? 'desktop' : 'ios');
+                return;
+            }
+            try {
+                await deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.info('[install] User choice:', outcome);
+                deferredPrompt = null;
+                if (outcome === 'accepted') card.hidden = true;
+            } catch (err) {
+                console.warn('[install] prompt() failed:', err);
+                showModal(isDesktop ? 'desktop' : 'ios');
+            }
+        });
+
+        window.addEventListener('appinstalled', () => {
+            console.info('[install] App installed');
+            card.hidden = true;
+            deferredPrompt = null;
+        });
+
+        // Fallback: if event never fires (app already installed, or installability criteria
+        // not met), still show the banner so user has a visible entry point. Clicking it
+        // will open the desktop instructions modal.
+        setTimeout(() => {
+            if (card.hidden && !deferredPrompt) {
+                desc.textContent = isDesktop
+                    ? 'Klik Install untuk lihat cara pasang di browser kamu.'
+                    : 'Tap Install untuk lihat cara pasang.';
+                card.hidden = false;
+                console.info('[install] beforeinstallprompt did not fire — showing manual fallback');
+            }
+        }, 2500);
+    })();
+    </script>
+</body>
+</html>

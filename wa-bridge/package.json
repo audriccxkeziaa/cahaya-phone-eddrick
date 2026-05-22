@@ -1,0 +1,21 @@
+{
+  "name": "cahaya-phone-wa-bridge",
+  "version": "2.0.0",
+  "description": "WhatsApp Bridge for Cahaya Phone - self-hosted via Baileys (lightweight, no Chromium)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "pino": "^8.21.0",
+    "qrcode": "^1.5.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

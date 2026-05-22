@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cahaya Phone — Pendaftaran Customer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@300;400;500;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Ambient background -->
+    <div class="bg-pattern"></div>
+    <div class="bg-accent bg-accent-1"></div>
+    <div class="bg-accent bg-accent-2"></div>
+
+    <div class="page-wrapper">
+        <!-- Top ribbon -->
+        <div class="top-ribbon">
+            <span>&#9671; Toko HP Terpercaya Sejak 2002 &#9671;</span>
+        </div>
+
+        <div class="container">
+            <!-- Header -->
+            <header class="header">
+                <div class="brand-badge">
+                    <div class="brand-icon">
+                        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+                            <line x1="12" y1="18" x2="12.01" y2="18"/>
+                        </svg>
+                    </div>
+                </div>
+                <h1 class="brand-name">CAHAYA PHONE</h1>
+                <p class="brand-tagline">FORM PENDAFTARAN CUSTOMER</p>
+                <div class="header-divider">
+                    <span class="divider-diamond"></span>
+                </div>
+            </header>
+
+            <!-- Alert -->
+            <div id="alert" class="alert"></div>
+
+            <form id="customerForm" autocomplete="on">
+                <!-- Honeypot: hidden from humans (positioned off-screen), but bots auto-fill all
+                     inputs. If this field has any value at submit time, the backend rejects the
+                     request. Add tabindex="-1" so keyboard users skip it. -->
+                <div aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;">
+                    <label for="website_url">Website URL (jangan diisi)</label>
+                    <input type="text" id="website_url" name="website_url" tabindex="-1" autocomplete="off">
+                </div>
+
+                <!-- Section 1: Informasi Customer -->
+                <div class="form-section fade-in">
+                    <div class="section-header">
+                        <span class="section-number">01</span>
+                        <div>
+                            <h3>Informasi Customer</h3>
+                            <p class="section-sub">Data pribadi Anda</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="nama_lengkap">Nama Lengkap <span class="required">*</span></label>
+                        <input type="text" id="nama_lengkap" name="nama_lengkap" required
+                               placeholder="Masukkan nama lengkap">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="whatsapp">Nomor WhatsApp <span class="required">*</span></label>
+                        <div class="input-with-prefix">
+                            <span class="input-prefix">+62</span>
+                            <input type="tel" id="whatsapp" name="whatsapp" required
+                                   placeholder="812 3456 7890">
+                        </div>
+                        <small class="field-hint">Format: 08xxxxxxxxxx atau 62xxxxxxxxxx</small>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="tanggal_lahir">Tanggal Lahir</label>
+                            <input type="date" id="tanggal_lahir" name="tanggal_lahir">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="nama_sales">Nama Sales</label>
+                            <input type="text" id="nama_sales" name="nama_sales"
+                                   placeholder="Nama sales">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="alamat">Alamat Lengkap</label>
+                        <textarea id="alamat" name="alamat" rows="3"
+                                  placeholder="Jl. Contoh No. 123, Kota"></textarea>
+                    </div>
+                </div>
+
+                <!-- Section 2: Informasi Produk -->
+                <div class="form-section fade-in">
+                    <div class="section-header">
+                        <span class="section-number">02</span>
+                        <div>
+                            <h3>Informasi Produk</h3>
+                            <p class="section-sub">Detail unit yang dibeli</p>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="merk_unit">Merk Unit</label>
+                            <select id="merk_unit" name="merk_unit">
+                                <option value="">— Pilih Merk —</option>
+                                <option value="iPhone">iPhone</option>
+                                <option value="Samsung">Samsung</option>
+                                <option value="Xiaomi">Xiaomi</option>
+                                <option value="Oppo">Oppo</option>
+                                <option value="Tecno">Tecno</option>
+                                <option value="Realme">Realme</option>
+                                <option value="Infinix">Infinix</option>
+                                <option value="Nokia">Nokia</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="tipe_unit">Tipe Unit</label>
+                            <input type="text" id="tipe_unit" name="tipe_unit"
+                                   placeholder="iPhone 15 Pro Max">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="harga">Harga</label>
+                            <div class="input-with-prefix">
+                                <span class="input-prefix">Rp</span>
+                                <input type="number" id="harga" name="harga"
+                                       placeholder="18000000" step="1">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="qty">Jumlah</label>
+                            <input type="number" id="qty" name="qty"
+                                   value="1" min="1">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section 3: Informasi Pembayaran -->
+                <div class="form-section fade-in">
+                    <div class="section-header">
+                        <span class="section-number">03</span>
+                        <div>
+                            <h3>Informasi Pembayaran</h3>
+                            <p class="section-sub">Metode & sumber informasi</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="metode_pembayaran">Metode Pembayaran</label>
+                        <select id="metode_pembayaran" name="metode_pembayaran">
+                            <option value="">— Pilih Metode —</option>
+                            <option value="Paid Cash">Paid Cash</option>
+                            <option value="Paid Credit - Akulaku">Paid Credit - Akulaku</option>
+                            <option value="Paid Credit - Avanto">Paid Credit - Avanto</option>
+                            <option value="Paid Credit - FinancePlus">Paid Credit - FinancePlus</option>
+                            <option value="Paid Credit - Home Credit Indonesia">Paid Credit - Home Credit Indonesia</option>
+                            <option value="Paid Credit - Indodana">Paid Credit - Indodana</option>
+                            <option value="Paid Credit - KreditPlus">Paid Credit - KreditPlus</option>
+                            <option value="Paid Credit - Kredivo">Paid Credit - Kredivo</option>
+                            <option value="Paid Credit - Shopeepay Later">Paid Credit - Shopeepay Later</option>
+                            <option value="Kartu Kredit">Kartu Kredit</option>
+                            <option value="Kartu Debit">Kartu Debit</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="tahu_dari">Tahu Cahaya Phone dari mana?</label>
+                        <input type="text" id="tahu_dari" name="tahu_dari"
+                               placeholder="Instagram, Teman, TikTok, dll">
+                    </div>
+                </div>
+
+                <!-- Submit -->
+                <button type="submit" id="submitBtn" class="submit-btn fade-in">
+                    <span class="btn-text">Kirim Data Customer</span>
+                    <span class="btn-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                            <polyline points="12 5 19 12 12 19"/>
+                        </svg>
+                    </span>
+                </button>
+
+                <!-- Trust badge -->
+                <div class="trust-badge">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                    <span>Data Anda aman & terenkripsi</span>
+                </div>
+            </form>
+
+            <!-- Footer -->
+            <footer class="footer">
+                <div class="footer-inner">
+                    <p>&copy; 2026 Cahaya Phone. All rights reserved.</p>
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <script src="/config.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
