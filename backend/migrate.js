@@ -172,6 +172,10 @@
                   created_at ASC
               ) as rn
             FROM customers
+            -- Only de-dupe REAL numbers. Placeholder numbers ("62" + only zeros,
+            -- used for walk-in customers without WhatsApp) are NOT a shared identity
+            -- and must never be merged/deleted as duplicates.
+            WHERE whatsapp !~ '^620*$'
           ) ranked
           WHERE rn > 1
         )
@@ -182,17 +186,23 @@
         dupRows.forEach(r => console.log(`    - #${r.id} ${r.nama_lengkap} (${r.whatsapp})`));
       }
 
-      // Tambah UNIQUE constraint pada kolom whatsapp (cegah duplikat di masa depan)
+      // UNIQUE on whatsapp — but ONLY for real numbers. Placeholder numbers
+      // ("62" followed by only zeros) are entered for walk-in customers without a
+      // WhatsApp; two different no-phone customers may share the same dummy and must
+      // NOT collide. So we drop the old all-rows constraint and enforce uniqueness
+      // via a PARTIAL unique index that skips placeholders.
       await client.query(`
         DO $$ BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'uq_customers_whatsapp'
-          ) THEN
-            ALTER TABLE customers ADD CONSTRAINT uq_customers_whatsapp UNIQUE (whatsapp);
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_customers_whatsapp') THEN
+            ALTER TABLE customers DROP CONSTRAINT uq_customers_whatsapp;
           END IF;
         END $$
       `);
-      console.log('✅ Unique constraint on whatsapp verified');
+      await client.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_whatsapp_real
+         ON customers (whatsapp) WHERE whatsapp !~ '^620*$'`
+      );
+      console.log('✅ Partial unique index on real whatsapp numbers verified (placeholders allowed to repeat)');
 
       // Ensure last_incoming_message_at column (for fast 24h window check)
       console.log('Ensuring last_incoming_message_at column...');

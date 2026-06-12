@@ -54,11 +54,19 @@ exports.submitForm = async (req, res) => {
             }
         }
 
-        // Sanitize & validate phone number (backend validation)
+        // Sanitize phone. Placeholder numbers ("62" followed by only zeros, e.g.
+        // 6200000) are entered by sales for walk-in customers WITHOUT a WhatsApp.
+        // They are "no phone" — not a real number — so we accept them as-is and skip
+        // strict validation. Crucially they must NEVER be treated as one shared
+        // identity (see lookup below): two different no-phone customers are NOT the
+        // same person.
         const cleanPhone = sanitizePhone(whatsapp);
-        const phoneCheck = validatePhone(cleanPhone);
-        if (!phoneCheck.valid) {
-            return res.status(400).json({ success: false, message: phoneCheck.message });
+        const isPlaceholderPhone = /^620*$/.test(cleanPhone);
+        if (!isPlaceholderPhone) {
+            const phoneCheck = validatePhone(cleanPhone);
+            if (!phoneCheck.valid) {
+                return res.status(400).json({ success: false, message: phoneCheck.message });
+            }
         }
 
         const extra = [];
@@ -113,11 +121,16 @@ exports.submitForm = async (req, res) => {
         // opted_in defaults to true if not explicitly set to false
         const optedIn = opted_in !== false;
 
-        // Check if this phone already exists (Chat Only OR repeat buyer)
-        const { rows: existingCustomer } = await db.query(
-            `SELECT id FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1`,
-            [cleanPhone]
-        );
+        // Look up an existing customer to merge into — REAL numbers only. For
+        // placeholder numbers we SKIP the lookup so each no-phone walk-in becomes a
+        // fresh record with its own id (no false "repeat order" merge).
+        let existingCustomer = [];
+        if (!isPlaceholderPhone) {
+            ({ rows: existingCustomer } = await db.query(
+                `SELECT id FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1`,
+                [cleanPhone]
+            ));
+        }
 
         let rows;
         if (existingCustomer.length > 0) {
@@ -200,6 +213,12 @@ exports.submitForm = async (req, res) => {
         // jadi kalau crash sebelum enqueue, boot reconcile tahu harus pakai nilai apa.
         (async () => {
             try {
+                if (isPlaceholderPhone) {
+                    // Walk-in customer without a real WhatsApp → nothing to send.
+                    // Skip enqueue so the queue isn't cluttered with guaranteed fails.
+                    console.log(`[Form] Skip auto-reply: no-WA placeholder for customer ${customerId}`);
+                    return;
+                }
                 console.log(`[Form] Enqueue auto-reply for ${cleanPhone}: toggle=${autoReplyEnabled ? 'ON' : 'OFF'} → auto_dispatch=${autoReplyEnabled}`);
                 const waResult = await whatsappService.enqueueAutoReply(
                     { nama_lengkap: finalName, whatsapp: cleanPhone },

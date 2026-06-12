@@ -596,6 +596,24 @@ app.post('/api/send', authCheck, async (req, res) => {
     const jid = toJid(phone);
     if (!jid) return res.status(400).json({ success: false, error: 'Invalid phone number' });
 
+    // Verify the number is actually ON WhatsApp before sending. Baileys'
+    // sendMessage() to a non-existent number does NOT throw — the message silently
+    // vanishes yet we'd report success and wrongly mark it delivered. Checking
+    // onWhatsApp first turns a typo'd/unregistered number into a clear failure the
+    // backend flags as FAILED (not SENT). It also avoids messaging dead numbers,
+    // which hurts the sender's reputation (ban signal).
+    try {
+        const clean = String(phone).replace(/\D/g, '');
+        const [info] = await sock.onWhatsApp(clean);
+        if (!info || info.exists === false) {
+            console.log(`[SKIP] ${phone}: not registered on WhatsApp`);
+            return res.status(422).json({ success: false, phone, registered: false, error: 'not_registered' });
+        }
+    } catch (_) {
+        // Registration check failed (transient) — don't block a legit send; fall
+        // through and attempt it (preserves prior behavior on check errors).
+    }
+
     try {
         if (typing) {
             try {
