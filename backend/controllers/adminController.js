@@ -2638,10 +2638,12 @@ async function performCleanup() {
                       LIMIT \${batchSize})`,
         [daysAgo(RETENTION.waLogSent)]
     );
+    // GUARD: hanya hapus log gagal/terminal yang lama — JANGAN sentuh pesan
+    // yang masih menunggu kirim (PENDING/QUEUED/SENDING/RETRYING).
     const waLogOtherDeleted = await batchedDelete(
         `DELETE FROM whatsapp_logs
          WHERE id IN (SELECT id FROM whatsapp_logs
-                      WHERE status != 'SENT' AND created_at < $1
+                      WHERE status NOT IN ('SENT','PENDING','QUEUED','SENDING','RETRYING') AND created_at < $1
                       LIMIT \${batchSize})`,
         [daysAgo(RETENTION.waLogFailed)]
     );
@@ -2704,8 +2706,13 @@ async function performMonthlyAggressiveCleanup() {
         []
     );
 
+    // GUARD: jangan pernah hapus pesan yang masih menunggu kirim
+    // (PENDING/QUEUED/SENDING/RETRYING). Pesan itu belum pernah terkirim → TIDAK
+    // ada di HP → menghapusnya = kehilangan permanen (bug: ~200 manual hilang).
     const waLogDeleted = await batchedDelete(
-        `DELETE FROM whatsapp_logs WHERE id IN (SELECT id FROM whatsapp_logs LIMIT \${batchSize})`,
+        `DELETE FROM whatsapp_logs WHERE id IN (SELECT id FROM whatsapp_logs
+                      WHERE status NOT IN ('PENDING','QUEUED','SENDING','RETRYING')
+                      LIMIT \${batchSize})`,
         []
     );
 
