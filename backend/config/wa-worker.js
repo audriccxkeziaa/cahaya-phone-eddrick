@@ -339,9 +339,13 @@ class WAWorker {
 
         // Send via bridge directly (this log row already exists — don't double-log via sendText)
         try {
+            // Anti-fingerprint: vary every message at send-time (random closing +
+            // invisible zero-width spaces) so identical-template auto-replies are not
+            // flagged as bot spam by WA. Applied here so it also covers rows that were
+            // re-queued via SQL (e.g. recovery batch) which never went through enqueue.
             const sendRes = await whatsappService._bridgeCall('POST', '/api/send', {
                 phone: row.phone,
-                message: row.message_body,
+                message: variasiPesan(row.message_body, null),
                 typing: true
             });
             const waMessageId = sendRes?.wa_message_id || null;

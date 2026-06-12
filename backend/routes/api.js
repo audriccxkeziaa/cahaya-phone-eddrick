@@ -16,6 +16,22 @@ const birthdayController = require('../controllers/birthdayController');
 // Middleware
 const authMiddleware = require('../config/authMiddleware');
 const { auditLog } = require('../config/auditLog');
+const { addClient } = require('../config/realtime');
+
+// SSE stream for realtime admin updates (cookie-authenticated, same as other admin
+// routes). Frontend connects via EventSource{ withCredentials:true } and re-fetches
+// the current view when a watched table changes. No-op events ("_ping") keep alive.
+router.get('/admin/stream', authMiddleware, (req, res) => {
+    res.set({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    });
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    res.write('retry: 5000\n\n');
+    addClient(res);
+});
 
 // Rate limiters for public endpoints
 const formLimiter = rateLimit({

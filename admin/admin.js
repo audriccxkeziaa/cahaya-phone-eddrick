@@ -967,6 +967,45 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     };
 
+    // ============================================
+    // REALTIME (Option C): SSE from backend (which relays Supabase Postgres
+    // changes). On any watched-table change, re-fetch the active view. Debounced
+    // so bursts coalesce → ~1-1.5s perceived realtime. Cookie auth via
+    // withCredentials. If the stream is unavailable, manual refresh still works.
+    // ============================================
+    let _rtStarted = false;
+    let _rtDebounce = null;
+    function startRealtimeStream() {
+        if (_rtStarted) return;
+        _rtStarted = true;
+        try {
+            const es = new EventSource(`${API_URL}/admin/stream`, { withCredentials: true });
+            es.onmessage = (e) => {
+                let msg = {};
+                try { msg = JSON.parse(e.data || '{}'); } catch (_) { return; }
+                if (!msg || msg.table === '_ping') return;   // ignore keep-alive
+                clearTimeout(_rtDebounce);
+                _rtDebounce = setTimeout(realtimeRefresh, 600);
+            };
+            es.onerror = () => { /* browser auto-reconnects (uses `retry` hint) */ };
+        } catch (err) {
+            console.warn('Realtime stream unavailable:', err.message);
+        }
+    }
+    async function realtimeRefresh() {
+        try {
+            const activePage = document.querySelector('.nav-item.active');
+            const page = activePage ? activePage.dataset.page : 'dashboard';
+            if (typeof pipelineCache !== 'undefined') pipelineCache.clear();
+            await loadDashboard();
+            if (page === 'customers') await loadCustomers();
+            else if (page === 'analytics') loadAnalytics();
+            else if (page === 'birthday') loadBirthdayPage();
+            else if (page === 'waconnect') { loadWAStatus(); loadFailedWA(); }
+            else if (page === 'messages') await loadMessages();
+        } catch (_) { /* silent — next event will retry */ }
+    }
+
     async function loadDashboard() {
         try {
             console.log('📊 Loading dashboard stats...');
@@ -978,6 +1017,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             loadBillingBanner();
             // Monthly backup reminder — fires when last_backup_at > 30 days ago.
             loadBackupBanner();
+
+            // Start realtime stream once (we're authenticated here). Safe no-op if
+            // backend realtime is disabled — falls back to manual refresh.
+            startRealtimeStream();
 
             // Load statistics
             const stats = await apiCall('/admin/stats');

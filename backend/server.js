@@ -372,5 +372,10 @@ if (process.env.VERCEL) {
             adminControllerForCron.cronMonthlyCleanup();
         }, { timezone: 'Asia/Makassar' });
         console.log('[Cron] Auto-cleanup scheduled: 1st of each month at 03:00 WITA');
+
+        // Realtime relay (Supabase Postgres changes → SSE to admin). No-op if
+        // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY unset or dep not installed,
+        // so this is safe to ship before the env/replication are configured.
+        require('./config/realtime').startRealtime();
     });
 }
