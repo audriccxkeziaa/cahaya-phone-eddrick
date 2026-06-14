@@ -1012,12 +1012,36 @@ exports.deleteCustomer = async (req, res) => {
         if (!id || isNaN(id)) {
             return res.status(400).json({ success: false, message: 'ID customer tidak valid' });
         }
-        const { rows } = await db.query('SELECT id, nama_lengkap FROM customers WHERE id = $1', [id]);
+        const { rows } = await db.query('SELECT id, nama_lengkap, whatsapp FROM customers WHERE id = $1', [id]);
         if (rows.length === 0) {
             return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
         }
-        await db.query('DELETE FROM customers WHERE id = $1', [id]);
-        console.log(`🗑️ Customer deleted: ${rows[0].nama_lengkap} (id=${id}) by admin ${req.admin.username}`);
+
+        // whatsapp_logs (the message queue / "pesan gagal terkirim") is keyed by
+        // PHONE, not customer_id — it has no FK to customers, so the ON DELETE
+        // CASCADE does NOT cover it. Without this, a deleted customer's queued /
+        // failed auto-replies linger in the queue. Wipe them in the same
+        // transaction as the customer delete so the two can't drift apart.
+        const phone = sanitizePhone(rows[0].whatsapp);
+
+        const client = await db.connect();
+        let removedQueue = 0;
+        try {
+            await client.query('BEGIN');
+            if (phone) {
+                const del = await client.query('DELETE FROM whatsapp_logs WHERE phone = $1', [phone]);
+                removedQueue = del.rowCount || 0;
+            }
+            await client.query('DELETE FROM customers WHERE id = $1', [id]);
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        console.log(`🗑️ Customer deleted: ${rows[0].nama_lengkap} (id=${id}) + ${removedQueue} queue row(s) by admin ${req.admin.username}`);
         res.json({ success: true, message: `Customer "${rows[0].nama_lengkap}" berhasil dihapus` });
     } catch (error) {
         console.error('❌ Delete customer error:', error);

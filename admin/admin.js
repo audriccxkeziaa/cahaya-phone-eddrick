@@ -2017,14 +2017,35 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
     window.deleteCustomer = async function(customerId, namaLengkap) {
         if (!customerId) return;
-        if (!confirm(`Yakin ingin menghapus customer "${namaLengkap}"?\n\nSemua data terkait (pembelian, pesan, ucapan ulang tahun) juga akan ikut terhapus.`)) return;
 
+        // Tentukan alur berdasarkan jumlah transaksi: 0–1 transaksi → hapus
+        // seluruh customer; >1 transaksi → tampilkan pemilih transaksi mana
+        // yang ingin dihapus (customer tetap ada, kecuali semua dipilih).
+        let purchases = [];
+        try {
+            const res = await apiCall(`/admin/customers/${customerId}`);
+            if (res && res.success) purchases = res.data?.purchases || [];
+        } catch (error) {
+            console.warn('deleteCustomer: gagal ambil detail, fallback hapus penuh:', error);
+        }
+
+        if (purchases.length <= 1) {
+            return confirmDeleteWholeCustomer(customerId, namaLengkap);
+        }
+        openDeleteTransactionPicker(customerId, namaLengkap, purchases);
+    };
+
+    // Hapus seluruh customer + semua data terkait. Antrian/queue (whatsapp_logs)
+    // dibersihkan di backend dalam satu transaksi dengan delete customer.
+    async function confirmDeleteWholeCustomer(customerId, namaLengkap) {
+        if (!confirm(`Yakin ingin menghapus customer "${namaLengkap}"?\n\nSemua data terkait (pembelian, pesan, ucapan ulang tahun, dan antrian auto-reply / pesan gagal terkirim) juga akan ikut terhapus.`)) return;
         try {
             const result = await apiCall(`/admin/customers/${customerId}`, { method: 'DELETE' });
             if (result && result.success) {
                 showAdminToast(result.message || 'Customer berhasil dihapus.', 'success');
                 closeModal();
                 if (typeof loadCustomers === 'function') loadCustomers();
+                if (typeof loadFailedWA === 'function') loadFailedWA();
             } else {
                 alert(result?.message || 'Gagal menghapus customer');
             }
@@ -2032,6 +2053,120 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             console.error('deleteCustomer error:', error);
             alert('Gagal menghapus customer');
         }
+    }
+
+    // Modal pemilih transaksi untuk customer dengan >1 pembelian.
+    function openDeleteTransactionPicker(customerId, namaLengkap, purchases) {
+        const fmtRp = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(Number(val) || 0);
+        const fmtDate = (d) => d ? new Date(d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+
+        document.getElementById('deleteTxPicker')?.remove(); // hindari modal dobel
+
+        const overlay = document.createElement('div');
+        overlay.id = 'deleteTxPicker';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        const rowsHtml = purchases.map((p, i) => {
+            const title = [p.merk_unit, p.tipe_unit].filter(Boolean).map(esc).join(' ') || `Transaksi #${i + 1}`;
+            const meta = [fmtRp(p.harga), p.qty ? `${p.qty} unit` : '', fmtDate(p.created_at)].filter(Boolean).join(' • ');
+            return `
+                <label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid #EFE7E1;border-radius:10px;margin-bottom:8px;cursor:pointer;">
+                    <input type="checkbox" class="del-tx-cb" value="${p.id}" style="margin-top:3px;width:16px;height:16px;cursor:pointer;">
+                    <span style="flex:1;">
+                        <span style="display:block;font-weight:600;font-size:13px;color:#1A1412;">#${i + 1} — ${title}</span>
+                        <span style="display:block;font-size:12px;color:#8C8078;margin-top:2px;">${meta}</span>
+                    </span>
+                </label>`;
+        }).join('');
+
+        overlay.innerHTML = `
+            <div style="background:#fff;border-radius:16px;max-width:460px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.25);">
+                <div style="padding:18px 20px 12px;border-bottom:1px solid #F0E9E4;">
+                    <h3 style="margin:0;font-size:16px;color:#1A1412;">Hapus Transaksi</h3>
+                    <p style="margin:6px 0 0;font-size:13px;color:#8C8078;">Customer <strong>${esc(namaLengkap)}</strong> punya ${purchases.length} transaksi. Pilih transaksi yang ingin dihapus.</p>
+                </div>
+                <div style="padding:14px 20px;overflow-y:auto;">
+                    ${rowsHtml}
+                    <label style="display:flex;gap:8px;align-items:center;font-size:12px;color:#8C8078;margin-top:4px;cursor:pointer;">
+                        <input type="checkbox" id="delTxSelectAll" style="width:15px;height:15px;cursor:pointer;"> Pilih semua (= hapus seluruh customer)
+                    </label>
+                </div>
+                <div style="padding:14px 20px;border-top:1px solid #F0E9E4;display:flex;gap:10px;justify-content:flex-end;">
+                    <button type="button" id="delTxCancel" style="padding:9px 16px;border-radius:9px;border:1px solid #E2D8D1;background:#fff;color:#6B5F57;font-size:13px;font-weight:600;cursor:pointer;">Batal</button>
+                    <button type="button" id="delTxConfirm" disabled style="padding:9px 16px;border-radius:9px;border:none;background:#DC2626;color:#fff;font-size:13px;font-weight:600;cursor:pointer;opacity:0.5;">Hapus Terpilih</button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(overlay);
+
+        const cbs = Array.from(overlay.querySelectorAll('.del-tx-cb'));
+        const selectAll = overlay.querySelector('#delTxSelectAll');
+        const confirmBtn = overlay.querySelector('#delTxConfirm');
+        const cancelBtn = overlay.querySelector('#delTxCancel');
+        const close = () => overlay.remove();
+
+        function refreshState() {
+            const checked = cbs.filter(cb => cb.checked).length;
+            const all = checked === cbs.length && checked > 0;
+            selectAll.checked = all;
+            confirmBtn.disabled = checked === 0;
+            confirmBtn.style.opacity = checked === 0 ? '0.5' : '1';
+            confirmBtn.textContent = all ? 'Hapus Customer' : `Hapus Terpilih (${checked})`;
+        }
+
+        cbs.forEach(cb => cb.addEventListener('change', refreshState));
+        selectAll.addEventListener('change', () => { cbs.forEach(cb => { cb.checked = selectAll.checked; }); refreshState(); });
+        cancelBtn.addEventListener('click', close);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+        confirmBtn.addEventListener('click', async () => {
+            const selectedIds = cbs.filter(cb => cb.checked).map(cb => Number(cb.value));
+            if (selectedIds.length === 0) return;
+
+            // Semua dipilih → sama saja dengan hapus seluruh customer.
+            if (selectedIds.length === purchases.length) {
+                close();
+                return confirmDeleteWholeCustomer(customerId, namaLengkap);
+            }
+
+            // Sebagian dipilih → kirim daftar LENGKAP: yang dipilih ditandai
+            // deleted, sisanya dikirim utuh. Wajib utuh, kalau tidak backend
+            // bisa meng-null-kan field yang hilang & salah hitung trim antrian
+            // (remainingPurchases dihitung dari panjang array yang dikirim).
+            const selectedSet = new Set(selectedIds);
+            const payload = purchases.map(p => selectedSet.has(p.id)
+                ? { id: p.id, deleted: true }
+                : {
+                    id: p.id, deleted: false,
+                    merk_unit: p.merk_unit, tipe_unit: p.tipe_unit,
+                    harga: p.harga, qty: p.qty, nama_sales: p.nama_sales,
+                    metode_pembayaran: p.metode_pembayaran, source: p.source
+                });
+
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Menghapus...';
+            try {
+                const res = await apiCall(`/admin/customers/${customerId}/purchases`, {
+                    method: 'PUT',
+                    body: JSON.stringify({ purchases: payload })
+                });
+                if (res && res.success) {
+                    showAdminToast(`${selectedIds.length} transaksi dihapus.`, 'success');
+                    close();
+                    if (typeof loadCustomers === 'function') loadCustomers();
+                    if (typeof loadFailedWA === 'function') loadFailedWA();
+                } else {
+                    alert(res?.message || 'Gagal menghapus transaksi');
+                    confirmBtn.disabled = false;
+                    refreshState();
+                }
+            } catch (error) {
+                console.error('delete transaction error:', error);
+                alert('Gagal menghapus transaksi');
+                confirmBtn.disabled = false;
+                refreshState();
+            }
+        });
     }
 
     window.saveCustomerInfo = async function(customerId) {
