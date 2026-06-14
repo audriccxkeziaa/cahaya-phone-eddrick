@@ -109,6 +109,36 @@ let isSleeping        = false;
 let isShuttingDown    = false;
 
 // ============================================
+// SENT-MESSAGE STORE (untuk retry receipts)
+//
+// WhatsApp multi-device: kalau penerima ATAU perangkat kita sendiri (mis.
+// WhatsApp Desktop) gagal mendekripsi sebuah pesan, perangkat itu mengirim
+// "retry receipt" — minta kita kirim ulang pesannya. Baileys memenuhinya
+// dengan memanggil getMessage(key) untuk mengambil isi pesan asli lalu
+// meng-enkripsi ulang. Kalau getMessage mengembalikan undefined (perilaku
+// lama), retry tidak pernah terjawab → lawan bicara nyangkut di
+// "Waiting for this message. This may take a while." selamanya.
+//
+// Simpan ring kecil pesan yang baru dikirim/dilihat agar retry bisa dijawab.
+// Retry biasanya datang dalam hitungan detik/menit, jadi store in-memory
+// (reset saat restart) sudah cukup.
+// ============================================
+const MSG_STORE_MAX = 1000;
+const messageStore = new Map(); // wa_message_id -> proto message content
+
+function rememberMessage(key, message) {
+    const id = key?.id;
+    if (!id || !message) return;
+    // Refresh recency: hapus lalu set ulang supaya urutan iterasi = LRU.
+    if (messageStore.has(id)) messageStore.delete(id);
+    messageStore.set(id, message);
+    if (messageStore.size > MSG_STORE_MAX) {
+        const oldest = messageStore.keys().next().value;
+        if (oldest !== undefined) messageStore.delete(oldest);
+    }
+}
+
+// ============================================
 // HTTP APP
 // ============================================
 const app = express();
@@ -401,7 +431,14 @@ async function startSocket() {
             syncFullHistory: false,
             markOnlineOnConnect: false,
             generateHighQualityLinkPreview: false,
-            getMessage: async () => undefined,
+            // Jawab retry receipts dari isi pesan yang kita simpan, sehingga
+            // pesan tidak nyangkut di "Waiting for this message" di perangkat
+            // penerima maupun perangkat kita sendiri (multi-device). Lihat
+            // catatan di SENT-MESSAGE STORE di atas.
+            getMessage: async (key) => {
+                const msg = key?.id ? messageStore.get(key.id) : undefined;
+                return msg || undefined;
+            },
             keepAliveIntervalMs: 30_000,
             connectTimeoutMs: 60_000,
             defaultQueryTimeoutMs: 60_000,
@@ -480,6 +517,10 @@ async function startSocket() {
             if (type !== 'notify') return;
 
             for (const msg of messages) {
+                // Simpan SEMUA pesan (termasuk fromMe) supaya retry receipts
+                // bisa dijawab oleh getMessage. Dilakukan sebelum filter di bawah.
+                rememberMessage(msg.key, msg.message);
+
                 try {
                     if (msg.key.fromMe) continue;
                     if (msg.key.remoteJid === 'status@broadcast') continue;
@@ -624,6 +665,9 @@ app.post('/api/send', authCheck, async (req, res) => {
             } catch (_) {}
         }
         const result      = await sock.sendMessage(jid, { text: message });
+        // Simpan langsung agar retry receipt yang datang cepat (sebelum echo
+        // messages.upsert) tetap bisa dijawab getMessage.
+        rememberMessage(result?.key, result?.message);
         const waMessageId = result?.key?.id || null;
         console.log(`[SENT] ${phone} (wa_id: ${waMessageId})`);
         return res.json({ success: true, phone, wa_message_id: waMessageId });

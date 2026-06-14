@@ -1180,18 +1180,24 @@ exports.forgotPassword = async (req, res) => {
             'SELECT id, username, email, nama FROM admins WHERE username = $1 OR LOWER(email) = LOWER($2)',
             [lookup, lookup]
         );
-        // Generic response (don't leak whether account exists)
-        const genericMsg = 'Jika akun ditemukan & memiliki email terdaftar, link reset akan dikirim ke email tersebut.';
-        if (rows.length === 0) return res.json({ success: true, message: genericMsg });
+
+        // Always reply with the SAME neutral message regardless of whether the
+        // account exists or has an email registered. Leaking "akun tidak
+        // ditemukan" vs "email belum diatur" would let an attacker enumerate
+        // valid admin usernames/emails. Internal-only details go to the log.
+        const genericMsg = 'Jika akun terdaftar, link reset telah dikirim ke email terkait. Cek inbox/spam.';
+        if (rows.length === 0) {
+            console.log(`[forgot] No admin matched "${lookup}" — replying neutral, no email sent.`);
+            return res.json({ success: true, message: genericMsg });
+        }
 
         const admin = rows[0];
 
-        // Strict: admin MUST have email registered
+        // Account exists but has no recovery email → cannot send. Stay neutral
+        // (do NOT reveal the account exists); owner must set an email via Settings.
         if (!admin.email) {
-            return res.status(400).json({
-                success: false,
-                message: 'Akun ini belum mengatur email. Hubungi owner untuk reset password manual.'
-            });
+            console.warn(`[forgot] Admin "${admin.username}" (id=${admin.id}) has no email — replying neutral, no email sent.`);
+            return res.json({ success: true, message: genericMsg });
         }
 
         const crypto = require('crypto');

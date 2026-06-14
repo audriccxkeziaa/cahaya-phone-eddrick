@@ -29,17 +29,21 @@ END $body$;
 
 -- Insert default owner admin (username: superadmin / password: admin123)
 -- bcrypt hash of 'admin123' with cost 10
+-- email = owner recovery address; "Lupa password" sends the reset link here.
 INSERT INTO admins (username, password, nama, email, role)
 VALUES (
     'superadmin',
     '$2a$10$i4H32RnI3kzLIDrZSYYEVOMRKzUcAydkLpAm4X.2KvT5aZL.qeU9u',
     'Cahaya Phone Superadmin',
-    NULL,
+    'cahayaphone288@gmail.com',
     'owner'
 )
 ON CONFLICT (username) DO UPDATE
     SET nama = EXCLUDED.nama,
-        role = EXCLUDED.role;
+        role = EXCLUDED.role,
+        -- backfill the recovery email only if it isn't set yet; never clobber
+        -- an address the owner already configured via Settings.
+        email = COALESCE(admins.email, EXCLUDED.email);
 
 -- ============================================
 -- TABLE: admin_reset_tokens

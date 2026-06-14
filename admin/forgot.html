@@ -41,6 +41,10 @@
     const API_URL = (typeof API_BASE_URL === 'string' ? API_BASE_URL : '') + '/api';
     console.log('[forgot] API_URL =', API_URL);
 
+    // Always shown on a successful request — never reveals whether the account
+    // (or its email) exists. Mirrors the backend's neutral response.
+    const NEUTRAL_MSG = 'Jika akun terdaftar, link reset telah dikirim ke email terkait. Cek inbox/spam.';
+
     const form = document.getElementById('forgotForm');
     const btn = form ? form.querySelector('button[type="submit"]') : null;
     if (!form) {
@@ -54,7 +58,8 @@
       alertEl.className = 'alert';
       const v = document.getElementById('usernameOrEmail').value.trim();
       if (!v) {
-        console.warn('[forgot] empty input');
+        alertEl.textContent = 'Masukkan username atau email admin terlebih dahulu.';
+        alertEl.classList.add('error','show');
         return;
       }
 
@@ -71,7 +76,9 @@
         console.log('[forgot] response data:', data);
 
         if (data.success) {
-          alertEl.textContent = data.message || 'Jika akun ditemukan, link reset dikirim ke email.';
+          // Use the fixed neutral message client-side so the UI stays neutral
+          // even if the backend wording ever changes.
+          alertEl.textContent = NEUTRAL_MSG;
           alertEl.classList.add('success','show');
           if (data._devToken) {
             const pre = document.createElement('pre');

@@ -504,18 +504,24 @@
         await client.query(
           `INSERT INTO admins (username, password, nama, email, role)
           VALUES ($1, $2, $3, $4, 'owner')`,
-          ['superadmin', hashedPassword, 'Cahaya Phone Superadmin', null]
+          ['superadmin', hashedPassword, 'Cahaya Phone Superadmin', 'cahayaphone288@gmail.com']
         );
-        console.log('✅ Default admin created (role: owner, email kosong — set via Settings)');
+        console.log('✅ Default admin created (role: owner, recovery email: cahayaphone288@gmail.com)');
         console.log('   Username: superadmin');
         console.log('   Password: admin123');
       } else {
-        // Update existing admin username & nama to latest, ensure first admin = owner
+        // Update existing admin username & nama to latest, ensure first admin = owner.
+        // Backfill the recovery email only when empty — so "Lupa password" has a
+        // destination — without clobbering an address the owner set via Settings.
         await client.query(
-          `UPDATE admins SET username = 'superadmin', nama = 'Cahaya Phone Superadmin', role = 'owner'
-          WHERE id = (SELECT id FROM admins ORDER BY id LIMIT 1)`
+          `UPDATE admins
+             SET username = 'superadmin',
+                 nama = 'Cahaya Phone Superadmin',
+                 role = 'owner',
+                 email = COALESCE(email, 'cahayaphone288@gmail.com')
+           WHERE id = (SELECT id FROM admins ORDER BY id LIMIT 1)`
         );
-        console.log('✅ Admin updated: superadmin / Cahaya Phone Superadmin / role=owner');
+        console.log('✅ Admin updated: superadmin / Cahaya Phone Superadmin / role=owner (recovery email ensured)');
       }
 
       // Tampilkan ringkasan

@@ -18,15 +18,16 @@
 
       <form id="resetForm">
         <div class="form-group">
-          <label>New Password</label>
-          <input type="password" id="newPassword" required />
+          <label>Password Baru</label>
+          <input type="password" id="newPassword" required autocomplete="new-password" />
+          <small style="display:block;margin-top:6px;color:#8C8078;font-size:12px;">Minimal 8 karakter, mengandung huruf dan angka.</small>
         </div>
         <div class="form-group">
-          <label>Confirm Password</label>
-          <input type="password" id="confirmPassword" required />
+          <label>Konfirmasi Password</label>
+          <input type="password" id="confirmPassword" required autocomplete="new-password" />
         </div>
         <div class="form-actions">
-          <button type="submit" class="btn-primary">Set Password</button>
+          <button type="submit" class="btn-primary">Simpan Password</button>
         </div>
       </form>
 
@@ -39,41 +40,105 @@
     const API_URL = API_BASE_URL + '/api';
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token');
+
+    const form = document.getElementById('resetForm');
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const newPw = document.getElementById('newPassword');
+    const confirmPw = document.getElementById('confirmPassword');
+    const alertEl = document.getElementById('resetAlert');
+
+    const INVALID_LINK_MSG = 'Link reset tidak valid atau sudah kedaluwarsa. Silakan minta link baru.';
+
+    function showAlert(msg, type) {
+      alertEl.textContent = msg;
+      alertEl.className = `alert ${type} show`;
+    }
+
+    // Lock the form (inputs + submit) when there's nothing valid to reset.
+    function disableForm() {
+      [newPw, confirmPw, submitBtn].forEach(el => { el.disabled = true; });
+    }
+
+    // The backend reports token problems with English strings like
+    // "Token not found / already used / expired". Collapse those into one
+    // friendly message; pass any other error (e.g. password rule) through.
+    function isTokenError(msg) {
+      return typeof msg === 'string' && /token/i.test(msg);
+    }
+
     if (!token) {
-      document.getElementById('resetAlert').textContent = 'Token tidak ditemukan di URL.';
-      document.getElementById('resetAlert').classList.add('error','show');
+      showAlert(INVALID_LINK_MSG, 'error');
+      disableForm();
     } else {
-      // Optionally validate token on load
+      // Validate the token on load so an expired/used link locks the form upfront.
       (async () => {
-        const r = await fetch(`${API_URL}/admin/reset/validate?token=${encodeURIComponent(token)}`);
-        const j = await r.json();
-        if (!j.success) {
-          const alertEl = document.getElementById('resetAlert');
-          alertEl.textContent = j.message || 'Invalid token';
-          alertEl.classList.add('error','show');
+        try {
+          const r = await fetch(`${API_URL}/admin/reset/validate?token=${encodeURIComponent(token)}`);
+          const j = await r.json();
+          if (!j.success) {
+            showAlert(INVALID_LINK_MSG, 'error');
+            disableForm();
+          }
+        } catch (err) {
+          console.error('[reset] validate error:', err);
+          showAlert('Tidak dapat terhubung ke server. Coba lagi nanti.', 'error');
+          disableForm();
         }
       })();
     }
 
-    document.getElementById('resetForm').addEventListener('submit', async (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const alertEl = document.getElementById('resetAlert');
       alertEl.className = 'alert';
-      const p1 = document.getElementById('newPassword').value;
-      const p2 = document.getElementById('confirmPassword').value;
-      if (p1.length < 6) { alertEl.textContent = 'Password harus minimal 6 karakter.'; alertEl.classList.add('error','show'); return; }
-      if (p1 !== p2) { alertEl.textContent = 'Password dan konfirmasi tidak cocok.'; alertEl.classList.add('error','show'); return; }
-      if (!token) { alertEl.textContent = 'Token tidak ditemukan.'; alertEl.classList.add('error','show'); return; }
 
-      const res = await fetch(`${API_URL}/admin/reset`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ token, new_password: p1 }) });
-      const data = await res.json();
-      if (data.success) {
-        alertEl.textContent = 'Password berhasil direset. Silakan login.';
-        alertEl.classList.add('success','show');
-        setTimeout(() => { window.location.href = 'index.html'; }, 1500);
-      } else {
-        alertEl.textContent = data.message || 'Gagal reset password.';
-        alertEl.classList.add('error','show');
+      const p1 = newPw.value;
+      const p2 = confirmPw.value;
+
+      // Mirror the server rule (validatePasswordStrength): min 8 chars, must
+      // contain at least one letter and one number. Keeping these in sync
+      // avoids the client accepting a password the server then rejects.
+      if (p1.length < 8) {
+        return showAlert('Password minimal 8 karakter.', 'error');
+      }
+      if (!/[A-Za-z]/.test(p1) || !/[0-9]/.test(p1)) {
+        return showAlert('Password harus mengandung minimal 1 huruf dan 1 angka.', 'error');
+      }
+      if (p1 !== p2) {
+        return showAlert('Password dan konfirmasi tidak cocok.', 'error');
+      }
+      if (!token) {
+        return showAlert(INVALID_LINK_MSG, 'error');
+      }
+
+      submitBtn.disabled = true;
+      const originalLabel = submitBtn.textContent;
+      submitBtn.textContent = 'Menyimpan...';
+
+      try {
+        const res = await fetch(`${API_URL}/admin/reset`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ token, new_password: p1 })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          showAlert('Password berhasil direset. Mengarahkan ke halaman login...', 'success');
+          form.querySelectorAll('input').forEach(el => { el.disabled = true; });
+          submitBtn.disabled = true;
+          setTimeout(() => { window.location.href = 'index.html'; }, 1500);
+        } else {
+          // A failure here almost always means the token expired/was used between
+          // page load and submit — guide the user to request a fresh link.
+          showAlert(isTokenError(data.message) ? INVALID_LINK_MSG : (data.message || 'Gagal reset password.'), 'error');
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalLabel;
+        }
+      } catch (err) {
+        console.error('[reset] submit error:', err);
+        showAlert('Tidak dapat terhubung ke server: ' + err.message, 'error');
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalLabel;
       }
     });
   </script>
