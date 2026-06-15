@@ -130,6 +130,14 @@ const CONFIG = {
     // Startup safety break — after restart, wait before sending
     startupCooldownMs: 30_000,
 
+    // Settling delay after the bridge (re)connects — e.g. after a fresh QR scan
+    // or the daily 08:00 WITA wake. A just-paired Baileys session needs time to
+    // re-establish encryption sessions with the account's OTHER linked devices
+    // (WhatsApp Desktop / HP). If we drain the queued backlog before that sync,
+    // the burst goes out undecryptable → "Waiting for this message" on those
+    // devices. Wait this long after each reconnect before resuming sends.
+    bridgeReconnectSettleMs: 120_000,
+
     // Daily limit fallback if not in DB
     defaultDailyLimit: 200
 };
@@ -153,6 +161,10 @@ class WAWorker {
         this.autoReplyBreakUntil = 0;
         this.nextAutoReplyAllowedAt = 0;
         this.autoReplyLastQueueDate = null;
+
+        // Bridge reconnect settling — see CONFIG.bridgeReconnectSettleMs
+        this.bridgeSettleUntil = 0;       // epoch ms — don't send before this after reconnect
+        this._bridgeWasConnected = false; // tracks connected→disconnected→connected transitions
 
         // Birthday queue state (separate pacing — never blocks broadcast or auto-reply)
         this.birthdayMsgsSinceBreak = 0;
@@ -270,7 +282,12 @@ class WAWorker {
         const now = Date.now();
 
         if (now < this.autoReplyBreakUntil) return;       // in a break
-        if (!this._isWorkingHours()) return;              // outside 08-22 WITA
+        if (!this._isWorkingHours()) {                    // outside 08-22 WITA
+            // Treat the overnight closed window as "disconnected" so the morning's
+            // first connect re-arms the settling delay (bridge also sleeps 22-08).
+            this._bridgeWasConnected = false;
+            return;
+        }
 
         // Daily warm-up — first auto-reply of the day gets a full profile delay
         // before sending, so even the very first message has anti-ban spacing.
@@ -296,9 +313,21 @@ class WAWorker {
         // (re-queued) and back off 60s — fine, but wasteful.
         try {
             const status = await whatsappService.getStatus();
-            if (!status || status.status !== 'connected') {
+            const connected = !!status && status.status === 'connected';
+            if (!connected) {
+                this._bridgeWasConnected = false;
                 return;  // bridge not ready; try next tick
             }
+            // Bridge just (re)connected (e.g. fresh QR scan or 08:00 wake) → arm a
+            // settling delay so the queued backlog isn't drained before the new
+            // session syncs encryption with the other linked devices. Without this,
+            // every reconnect produces a burst of "Waiting for this message".
+            if (!this._bridgeWasConnected) {
+                this._bridgeWasConnected = true;
+                this.bridgeSettleUntil = Date.now() + CONFIG.bridgeReconnectSettleMs;
+                console.log(`[WA Worker] 🔗 Bridge connect terdeteksi — tunggu ${Math.round(CONFIG.bridgeReconnectSettleMs / 1000)}s biar sesi enkripsi sync sebelum kirim backlog (hindari "Waiting")`);
+            }
+            if (Date.now() < this.bridgeSettleUntil) return;  // still settling
         } catch (_) {
             return;  // bridge unreachable; try next tick
         }
