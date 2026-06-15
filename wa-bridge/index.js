@@ -27,6 +27,9 @@ const {
     makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 
+const fs   = require('fs');
+const path = require('path');
+
 const rawLogger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 const BAD_MAC_ALERT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const BAD_MAC_ALERT_THRESHOLD = 10;
@@ -109,32 +112,93 @@ let isSleeping        = false;
 let isShuttingDown    = false;
 
 // ============================================
-// SENT-MESSAGE STORE (untuk retry receipts)
+// SENT-MESSAGE STORE (untuk menjawab retry receipts)
 //
 // WhatsApp multi-device: kalau penerima ATAU perangkat kita sendiri (mis.
 // WhatsApp Desktop) gagal mendekripsi sebuah pesan, perangkat itu mengirim
 // "retry receipt" — minta kita kirim ulang pesannya. Baileys memenuhinya
 // dengan memanggil getMessage(key) untuk mengambil isi pesan asli lalu
-// meng-enkripsi ulang. Kalau getMessage mengembalikan undefined (perilaku
-// lama), retry tidak pernah terjawab → lawan bicara nyangkut di
-// "Waiting for this message. This may take a while." selamanya.
+// meng-enkripsi ulang. Kalau getMessage mengembalikan undefined, retry tidak
+// pernah terjawab → lawan bicara / perangkat kita sendiri nyangkut di
+// "Waiting for this message. This may take a while." SELAMANYA.
 //
-// Simpan ring kecil pesan yang baru dikirim/dilihat agar retry bisa dijawab.
-// Retry biasanya datang dalam hitungan detik/menit, jadi store in-memory
-// (reset saat restart) sudah cukup.
+// BUG LAMA (penyebab "Waiting" tidak kelar-kelar): store ini HANYA in-memory.
+// Setiap container restart / redeploy Railway / crash / OOM (memori dibatasi
+// 128MB) → seluruh store hilang. Retry receipt yang datang SETELAH itu tidak
+// bisa dijawab (getMessage → undefined) → pesan nyangkut "Waiting" permanen.
+// Karena tiap kali nge-fix kita redeploy, store selalu kosong tepat saat
+// perangkat minta retry → fix-nya kelihatan "gagal terus".
+//
+// FIX: store di-PERSIST ke disk (SESSION_DIR — idealnya di Railway Volume)
+// + diberi TTL, jadi retry yang telat (bahkan lintas redeploy) tetap dijawab.
 // ============================================
-const MSG_STORE_MAX = 1000;
-const messageStore = new Map(); // wa_message_id -> proto message content
+const MSG_STORE_MAX    = 3000;
+const MSG_STORE_TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 hari — retry kadang telat
+const MSG_STORE_FILE   = path.join(SESSION_DIR, 'msg-store.json');
+const messageStore     = new Map(); // wa_message_id -> { msg, ts }
+let msgStoreSaveTimer  = null;
 
 function rememberMessage(key, message) {
     const id = key?.id;
     if (!id || !message) return;
     // Refresh recency: hapus lalu set ulang supaya urutan iterasi = LRU.
     if (messageStore.has(id)) messageStore.delete(id);
-    messageStore.set(id, message);
+    messageStore.set(id, { msg: message, ts: Date.now() });
     if (messageStore.size > MSG_STORE_MAX) {
         const oldest = messageStore.keys().next().value;
         if (oldest !== undefined) messageStore.delete(oldest);
+    }
+    scheduleMsgStoreSave();
+}
+
+function getStoredMessage(id) {
+    if (!id) return undefined;
+    const entry = messageStore.get(id);
+    if (!entry) return undefined;
+    if (Date.now() - entry.ts > MSG_STORE_TTL_MS) {
+        messageStore.delete(id);
+        return undefined;
+    }
+    return entry.msg;
+}
+
+// Tulis ke disk secara debounce supaya burst kirim pesan tidak spam I/O.
+function scheduleMsgStoreSave() {
+    if (msgStoreSaveTimer) return;
+    msgStoreSaveTimer = setTimeout(saveMessageStore, 5000);
+}
+
+function saveMessageStore() {
+    msgStoreSaveTimer = null;
+    try {
+        fs.mkdirSync(SESSION_DIR, { recursive: true });
+        const now = Date.now();
+        const obj = {};
+        for (const [id, entry] of messageStore) {
+            if (now - entry.ts > MSG_STORE_TTL_MS) { messageStore.delete(id); continue; }
+            obj[id] = entry;
+        }
+        fs.writeFileSync(MSG_STORE_FILE, JSON.stringify(obj));
+    } catch (err) {
+        console.warn('[MSG STORE] Gagal persist:', err.message);
+    }
+}
+
+function loadMessageStore() {
+    try {
+        if (!fs.existsSync(MSG_STORE_FILE)) return;
+        const obj = JSON.parse(fs.readFileSync(MSG_STORE_FILE, 'utf8'));
+        const now = Date.now();
+        let loaded = 0;
+        for (const [id, entry] of Object.entries(obj)) {
+            if (!entry || !entry.msg) continue;
+            if (now - (entry.ts || 0) > MSG_STORE_TTL_MS) continue;
+            messageStore.set(id, entry);
+            loaded++;
+        }
+        if (loaded > 0) console.log(`[MSG STORE] Loaded ${loaded} pesan dari disk — siap menjawab retry receipt lintas restart`);
+    } catch (err) {
+        console.warn('[MSG STORE] Gagal load:', err.message);
     }
 }
 
@@ -180,8 +244,6 @@ function isActiveHour() {
 // ============================================
 // FORWARD QUEUE
 // ============================================
-const fs   = require('fs');
-const path = require('path');
 const PENDING_FORWARDS_FILE     = path.join(SESSION_DIR, 'pending-forwards.json');
 const FORWARD_RETRY_INTERVAL_MS = 30_000;
 const FORWARD_RETRY_BATCH       = 5;
@@ -301,6 +363,7 @@ async function forwardIncoming(payload) {
 }
 
 loadPendingForwards();
+loadMessageStore();
 
 // ============================================
 // SLEEP / WAKE  (jam operasional 08:00–22:00 WITA)
@@ -436,7 +499,16 @@ async function startSocket() {
             // penerima maupun perangkat kita sendiri (multi-device). Lihat
             // catatan di SENT-MESSAGE STORE di atas.
             getMessage: async (key) => {
-                const msg = key?.id ? messageStore.get(key.id) : undefined;
+                // Dipanggil Baileys HANYA saat ada retry receipt (perangkat lain
+                // minta kita kirim ulang pesan yang gagal didekripsi). Log hit/miss
+                // supaya masalah "Waiting for this message" bisa didiagnosa dari
+                // log Railway, bukan menebak-nebak.
+                const msg = getStoredMessage(key?.id);
+                if (msg) {
+                    console.log(`[RETRY] getMessage HIT id=${key?.id} — menjawab retry receipt (memperbaiki "Waiting for this message")`);
+                } else {
+                    console.warn(`[RETRY] getMessage MISS id=${key?.id} — pesan tak ada di store, retry tak terjawab → bisa nyangkut "Waiting"`);
+                }
                 return msg || undefined;
             },
             keepAliveIntervalMs: 30_000,
@@ -562,6 +634,24 @@ async function startSocket() {
                 } catch (err) {
                     console.error('[MSG IN] Processing error:', err.message);
                 }
+            }
+        });
+
+        // Delivery/read receipts untuk pesan yang KITA kirim. Supaya dari log
+        // Railway bisa dipastikan apakah auto-reply BENAR-BENAR sampai ke
+        // pelanggan (DELIVERY_ACK = centang 2) atau baru sampai server
+        // (SERVER_ACK = centang 1). Ini memisahkan "masalah pengiriman" dari
+        // "masalah dekripsi perangkat sendiri" (Waiting for this message).
+        sock.ev.on('messages.update', (updates) => {
+            for (const u of updates) {
+                if (!u.key?.fromMe) continue;
+                const st = u.update?.status;
+                if (st === undefined || st === null) continue;
+                const label = {
+                    0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK (✓ terkirim ke server)',
+                    3: 'DELIVERY_ACK (✓✓ sampai ke HP penerima)', 4: 'READ (✓✓ biru)', 5: 'PLAYED'
+                }[st] || `status=${st}`;
+                console.log(`[RECEIPT] ${u.key?.remoteJid} id=${u.key?.id} → ${label}`);
             }
         });
 
