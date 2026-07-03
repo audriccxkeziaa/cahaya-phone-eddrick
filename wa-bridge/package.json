@@ -8,11 +8,11 @@
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "6.7.23",
+    "@whiskeysockets/baileys": "7.0.0-rc13",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
-    "pino": "^8.21.0",
+    "pino": "^9.6.0",
     "qrcode": "^1.5.3"
   },
   "engines": {

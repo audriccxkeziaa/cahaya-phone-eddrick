@@ -83,9 +83,14 @@ class WhatsAppService {
             await this._incrementDailyCounter('sent');
             return { success: true, phone: formattedNumber, wa_message_id: waMessageId };
         } catch (err) {
-            const errorCode = err.bridgeStatus ? String(err.bridgeStatus) : 'BRIDGE_ERR';
+            // Bridge menandai nomor tak terdaftar WA dengan code khusus —
+            // permanent failure, JANGAN retry (kirim ulang ke nomor mati = sinyal spam)
+            const bridgeCode = err.bridgeData?.code;
+            const errorCode = bridgeCode || (err.bridgeStatus ? String(err.bridgeStatus) : 'BRIDGE_ERR');
             const errorDetail = err.message || 'Unknown error';
-            const retryable = this._isRetryable(errorCode, err.bridgeStatus);
+            const retryable = bridgeCode === 'NOT_ON_WHATSAPP'
+                ? false
+                : this._isRetryable(errorCode, err.bridgeStatus);
             await this._updateLogFailed(logId, errorCode, errorDetail, err.bridgeData, retryable);
             await this._incrementDailyCounter('failed');
             return { success: false, phone: formattedNumber, error: errorDetail, error_code: errorCode, retryable };
@@ -337,11 +342,30 @@ class WhatsAppService {
     }
 
     // ============================================
-    // PUBLIC (noop for compat — Baileys has no delivery webhooks like Cloud API)
+    // PUBLIC: Update status delivery dari bridge (messages.update acks)
+    // ack: 3 = DELIVERY_ACK (✓✓), 4 = READ, 5 = PLAYED
+    // Penting: kalau pesan mandek di SENT tanpa pernah DELIVERED,
+    // itu tanda masalah pengiriman — kelihatan di log/dashboard.
     // ============================================
-    async updateMessageStatus(_waMessageId, _status, _timestamp) {
-        // Baileys can emit message status events, but we don't wire them.
-        // Kept as no-op so existing callers don't break.
+    async updateMessageStatus(waMessageId, ackStatus) {
+        if (!waMessageId) return;
+        const ack = parseInt(ackStatus);
+        if (!Number.isFinite(ack) || ack < 3) return;
+
+        const newStatus = ack >= 4 ? 'READ' : 'DELIVERED';
+        try {
+            await db.query(
+                `UPDATE whatsapp_logs SET
+                    status = $1,
+                    delivered_at = COALESCE(delivered_at, NOW()),
+                    updated_at = NOW()
+                 WHERE wa_message_id = $2
+                   AND status IN ('SENT', 'DELIVERED')`,
+                [newStatus, waMessageId]
+            );
+        } catch (err) {
+            console.warn('[WA] updateMessageStatus failed:', err.message);
+        }
     }
 
     // ============================================

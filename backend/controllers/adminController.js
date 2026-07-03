@@ -133,14 +133,8 @@ function variasiPesan(message, customerName) {
     const closing = RANDOM_CLOSINGS[Math.floor(Math.random() * RANDOM_CLOSINGS.length)];
     msg = msg + closing;
 
-    // Random invisible variation: add 1-3 zero-width spaces at random positions
-    const zwsp = '\u200B';
-    const numZwsp = Math.floor(Math.random() * 3) + 1;
-    for (let i = 0; i < numZwsp; i++) {
-        const pos = Math.floor(Math.random() * msg.length);
-        msg = msg.slice(0, pos) + zwsp + msg.slice(pos);
-    }
-
+    // CATATAN: zero-width space sengaja TIDAK dipakai \u2014 karakter tak terlihat
+    // justru terdeteksi sebagai teknik evasion oleh anti-spam WhatsApp.
     return msg;
 }
 

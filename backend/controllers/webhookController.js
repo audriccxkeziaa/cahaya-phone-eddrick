@@ -38,6 +38,19 @@ exports.handleIncomingMessage = async (data) => {
             return { success: false, error: 'Invalid phone number' };
         }
 
+        // Idempotency: Baileys bisa kirim ulang pesan yang sama setelah reconnect.
+        // Jangan proses dua kali (mencegah duplikat pesan & status flip-flop).
+        if (waMessageId) {
+            const { rows: dup } = await db.query(
+                'SELECT 1 FROM messages WHERE wa_message_id = $1 LIMIT 1',
+                [waMessageId]
+            );
+            if (dup.length > 0) {
+                console.log(`[WEBHOOK] Duplicate message ${waMessageId}, skipped`);
+                return { success: true, duplicate: true };
+            }
+        }
+
         console.log(`[WEBHOOK] Processing: ${senderName} (${cleanPhone}): ${message.substring(0, 50)}...`);
 
         // If this phone already exists in Google Contacts with a real name,
@@ -165,7 +178,9 @@ exports.handleIncomingMessage = async (data) => {
 
         // Simpan pesan ke database (dengan wa_message_id untuk idempotency)
         await db.query(
-            'INSERT INTO messages (customer_id, direction, message, wa_message_id) VALUES ($1, $2, $3, $4)',
+            `INSERT INTO messages (customer_id, direction, message, wa_message_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT DO NOTHING`,
             [customerId, 'in', message, waMessageId || null]
         );
 
@@ -200,6 +215,13 @@ exports.handleWhatsAppWebhook = async (req, res) => {
             return res.status(401).json({ success: false, message: 'Invalid webhook secret' });
         }
 
+        // Status delivery/read dari bridge (centang 1/2/biru) → update whatsapp_logs
+        if (req.body.type === 'status_update') {
+            const whatsappService = require('../config/whatsapp');
+            await whatsappService.updateMessageStatus(req.body.wa_message_id, req.body.ack_status);
+            return res.json({ success: true });
+        }
+
         // Don't log full body in production — contains PII (phone + message). Log just sender prefix.
         if (process.env.NODE_ENV !== 'production') {
             console.log('[WEBHOOK HTTP] Received:', JSON.stringify(req.body, null, 2));
@@ -214,7 +236,8 @@ exports.handleWhatsAppWebhook = async (req, res) => {
             data = {
                 sender: req.body.sender,
                 message: req.body.message,
-                pushname: req.body.pushname || ''
+                pushname: req.body.pushname || '',
+                wa_message_id: req.body.wa_message_id || null
             };
         }
         // Format Fonnte

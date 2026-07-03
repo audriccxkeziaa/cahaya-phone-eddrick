@@ -111,6 +111,35 @@ let sleepTimer        = null;
 let isSleeping        = false;
 let isShuttingDown    = false;
 
+// Cache hasil onWhatsApp (cek nomor terdaftar + JID kanonis).
+// Mencegah USync query berulang (rate-limited) dan mencegah kirim
+// ke nomor yang tidak terdaftar WhatsApp (sinyal spam kuat -> ban).
+const numberCache = new Map(); // cleanPhone -> { jid, exists, at }
+const NUMBER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 jam
+const NUMBER_CACHE_MAX = 10000;
+
+async function resolveRecipient(cleanPhone) {
+    const cached = numberCache.get(cleanPhone);
+    if (cached && Date.now() - cached.at < NUMBER_CACHE_TTL) return cached;
+
+    const results = await sock.onWhatsApp(cleanPhone);
+    if (!Array.isArray(results)) {
+        // Lookup gagal/unknown — jangan cache, biar caller fallback
+        return null;
+    }
+    const r = results[0];
+    const entry = {
+        jid: r && r.exists ? r.jid : null,
+        exists: !!(r && r.exists),
+        at: Date.now()
+    };
+    numberCache.set(cleanPhone, entry);
+    while (numberCache.size > NUMBER_CACHE_MAX) {
+        numberCache.delete(numberCache.keys().next().value);
+    }
+    return entry;
+}
+
 // ============================================
 // SENT-MESSAGE STORE (untuk menjawab retry receipts)
 //
@@ -489,7 +518,6 @@ async function startSocket() {
                 keys: makeCacheableSignalKeyStore(state.keys, logger)
             },
             logger,
-            printQRInTerminal: false,
             browser: Browsers.macOS('Safari'),
             syncFullHistory: false,
             markOnlineOnConnect: false,
@@ -514,7 +542,9 @@ async function startSocket() {
             keepAliveIntervalMs: 30_000,
             connectTimeoutMs: 60_000,
             defaultQueryTimeoutMs: 60_000,
-            shouldSyncHistoryMessage: () => false,
+            // shouldSyncHistoryMessage DIHAPUS: di Baileys 7, memblokir history
+            // sync mencegah LID mapping awal masuk → session error → pesan
+            // gagal dekripsi di HP penerima. (syncFullHistory tetap false.)
             shouldIgnoreJid: jid => /@(broadcast|status)/.test(jid || '')
         });
 
@@ -611,12 +641,20 @@ async function startSocket() {
                     let phoneJid;
 
                     if (remoteJid.endsWith('@lid')) {
-                        const realPhone = msg.key.senderPn || msg.key.remoteJidAlt;
-                        if (!realPhone) {
-                            console.log(`[MSG IN] LID-only sender ${pushname} (${remoteJid}) — no real phone, skipped`);
+                        // Baileys v7: remoteJidAlt berisi JID nomor asli.
+                        // Fallback terakhir: LID mapping store milik Baileys.
+                        let realPhone = msg.key.remoteJidAlt || msg.key.senderPn || null;
+                        if (!realPhone || !String(realPhone).endsWith('@s.whatsapp.net')) {
+                            try {
+                                const mapped = await sock?.signalRepository?.lidMapping?.getPNForLID?.(remoteJid);
+                                if (mapped && String(mapped).endsWith('@s.whatsapp.net')) realPhone = mapped;
+                            } catch (_) { /* mapping belum tersedia */ }
+                        }
+                        if (!realPhone || !String(realPhone).endsWith('@s.whatsapp.net')) {
+                            console.warn(`[MSG IN] LID-only sender ${pushname} (${remoteJid}) — nomor asli tak bisa di-resolve, skipped`);
                             continue;
                         }
-                        phoneJid = realPhone;
+                        phoneJid = String(realPhone);
                     } else {
                         phoneJid = remoteJid;
                     }
@@ -637,21 +675,35 @@ async function startSocket() {
             }
         });
 
-        // Delivery/read receipts untuk pesan yang KITA kirim. Supaya dari log
-        // Railway bisa dipastikan apakah auto-reply BENAR-BENAR sampai ke
-        // pelanggan (DELIVERY_ACK = centang 2) atau baru sampai server
-        // (SERVER_ACK = centang 1). Ini memisahkan "masalah pengiriman" dari
-        // "masalah dekripsi perangkat sendiri" (Waiting for this message).
-        sock.ev.on('messages.update', (updates) => {
+        // Delivery/read receipts untuk pesan yang KITA kirim.
+        // 1. Log label supaya dari log Railway bisa dipastikan apakah pesan
+        //    BENAR-BENAR sampai (DELIVERY_ACK ✓✓) atau baru ke server (✓).
+        // 2. Forward ke backend agar whatsapp_logs mencatat status asli —
+        //    kalau banyak pesan mandek di SENT tanpa DELIVERED, langsung
+        //    kelihatan di dashboard, bukan diam-diam gagal.
+        sock.ev.on('messages.update', async (updates) => {
             for (const u of updates) {
-                if (!u.key?.fromMe) continue;
-                const st = u.update?.status;
-                if (st === undefined || st === null) continue;
-                const label = {
-                    0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK (✓ terkirim ke server)',
-                    3: 'DELIVERY_ACK (✓✓ sampai ke HP penerima)', 4: 'READ (✓✓ biru)', 5: 'PLAYED'
-                }[st] || `status=${st}`;
-                console.log(`[RECEIPT] ${u.key?.remoteJid} id=${u.key?.id} → ${label}`);
+                try {
+                    if (!u.key?.fromMe || !u.key?.id) continue;
+                    const status = u.update?.status;
+                    if (status === undefined || status === null) continue;
+                    const label = {
+                        0: 'ERROR', 1: 'PENDING', 2: 'SERVER_ACK (✓ terkirim ke server)',
+                        3: 'DELIVERY_ACK (✓✓ sampai ke HP penerima)', 4: 'READ (✓✓ biru)', 5: 'PLAYED'
+                    }[status] || `status=${status}`;
+                    console.log(`[RECEIPT] ${u.key?.remoteJid} id=${u.key?.id} → ${label}`);
+
+                    // 2=SERVER_ACK(✓) 3=DELIVERY_ACK(✓✓) 4=READ 5=PLAYED
+                    if (status < 3) continue;
+                    await forwardIncoming({
+                        source: 'wa-bridge',
+                        type: 'status_update',
+                        wa_message_id: u.key.id,
+                        ack_status: status
+                    });
+                } catch (err) {
+                    console.warn('[ACK] Forward error:', err.message);
+                }
             }
         });
 
@@ -724,28 +776,34 @@ app.post('/api/send', authCheck, async (req, res) => {
     if (!isReady())
         return res.status(503).json({ success: false, error: `WhatsApp not connected (status: ${clientState.status})` });
 
-    const jid = toJid(phone);
-    if (!jid) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+    const clean = String(phone).replace(/\D/g, '');
+    if (!clean) return res.status(400).json({ success: false, error: 'Invalid phone number' });
 
-    // Verify the number is actually ON WhatsApp before sending. Baileys'
-    // sendMessage() to a non-existent number does NOT throw — the message silently
-    // vanishes yet we'd report success and wrongly mark it delivered. Checking
-    // onWhatsApp first turns a typo'd/unregistered number into a clear failure the
-    // backend flags as FAILED (not SENT). It also avoids messaging dead numbers,
-    // which hurts the sender's reputation (ban signal).
     try {
-        const clean = String(phone).replace(/\D/g, '');
-        const [info] = await sock.onWhatsApp(clean);
-        if (!info || info.exists === false) {
-            console.log(`[SKIP] ${phone}: not registered on WhatsApp`);
-            return res.status(422).json({ success: false, phone, registered: false, error: 'not_registered' });
+        // ANTI-BAN: pastikan nomor terdaftar di WhatsApp sebelum kirim
+        // (Baileys sendMessage ke nomor tak terdaftar TIDAK throw — pesan
+        // lenyap diam-diam tapi kita laporkan sukses). Kirim ke nomor mati
+        // juga sinyal spam kuat. Cek via resolveRecipient (ber-cache 6 jam)
+        // sekaligus dapat JID kanonis — alamat yang benar supaya pesan
+        // terenkripsi dengan session yang tepat (penting untuk user LID).
+        let jid = null;
+        try {
+            const target = await resolveRecipient(clean);
+            if (target && target.exists === false) {
+                console.warn(`[SEND SKIP] ${clean} tidak terdaftar di WhatsApp`);
+                return res.status(422).json({
+                    success: false,
+                    phone: clean,
+                    code: 'NOT_ON_WHATSAPP',
+                    error: 'Nomor tidak terdaftar di WhatsApp'
+                });
+            }
+            jid = target?.jid || null;
+        } catch (checkErr) {
+            console.warn(`[SEND] Cek nomor gagal (${checkErr.message}) — lanjut kirim langsung`);
         }
-    } catch (_) {
-        // Registration check failed (transient) — don't block a legit send; fall
-        // through and attempt it (preserves prior behavior on check errors).
-    }
+        if (!jid) jid = toJid(clean);
 
-    try {
         if (typing) {
             try {
                 await sock.presenceSubscribe(jid);
@@ -759,11 +817,14 @@ app.post('/api/send', authCheck, async (req, res) => {
         // messages.upsert) tetap bisa dijawab getMessage.
         rememberMessage(result?.key, result?.message);
         const waMessageId = result?.key?.id || null;
-        console.log(`[SENT] ${phone} (wa_id: ${waMessageId})`);
-        return res.json({ success: true, phone, wa_message_id: waMessageId });
+
+        console.log(`[SENT] ${clean} -> ${jid} (wa_id: ${waMessageId})`);
+        return res.json({ success: true, phone: clean, wa_message_id: waMessageId });
     } catch (err) {
-        console.error(`[SEND FAIL] ${phone}:`, err.message);
-        return res.status(500).json({ success: false, phone, error: err.message });
+        console.error(`[SEND FAIL] ${clean}:`, err.message);
+        // Session/JID error bisa sembuh setelah resolve ulang — buang cache
+        numberCache.delete(clean);
+        return res.status(500).json({ success: false, phone: clean, error: err.message });
     }
 });
 
@@ -773,10 +834,11 @@ app.post('/api/check-number', authCheck, async (req, res) => {
     if (!isReady()) return res.status(503).json({ success: false, error: `Not connected (status: ${clientState.status})` });
 
     try {
-        const clean    = String(phone).replace(/\D/g, '');
-        const [result] = await sock.onWhatsApp(clean);
-        if (result?.exists) return res.json({ success: true, registered: true, jid: result.jid });
-        return res.json({ success: true, registered: false });
+        const clean  = String(phone).replace(/\D/g, '');
+        const target = await resolveRecipient(clean);
+        if (target && target.exists) return res.json({ success: true, registered: true, jid: target.jid });
+        if (target && target.exists === false) return res.json({ success: true, registered: false });
+        return res.status(500).json({ success: false, error: 'Lookup gagal (hasil tidak diketahui)' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }

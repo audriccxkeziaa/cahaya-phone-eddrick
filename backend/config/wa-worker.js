@@ -67,13 +67,8 @@ function variasiPesan(message, customerName) {
     // 4. Random closing suffix
     const c = RANDOM_CLOSINGS[Math.floor(Math.random() * RANDOM_CLOSINGS.length)];
     msg = msg + c;
-    // 5. 1-2 zero-width spaces at random positions (defeats exact-string fingerprinting)
-    const zwsp = '​';
-    const numZwsp = Math.floor(Math.random() * 2) + 1;
-    for (let i = 0; i < numZwsp; i++) {
-        const pos = Math.floor(Math.random() * Math.max(1, msg.length));
-        msg = msg.slice(0, pos) + zwsp + msg.slice(pos);
-    }
+    // CATATAN: zero-width space sengaja TIDAK dipakai — karakter tak terlihat
+    // justru terdeteksi sebagai teknik evasion oleh anti-spam WhatsApp.
     return msg;
 }
 
@@ -262,6 +257,7 @@ class WAWorker {
     async _cycle() {
         this.processing = true;
         try {
+            await this._checkActiveNumber();
             await this._retryFailed();
             await this._processAutoReplyQueue();
             await this._processBirthdayQueue();
@@ -270,6 +266,67 @@ class WAWorker {
             console.error('[WA Worker] Cycle error:', err.message);
         } finally {
             this.processing = false;
+        }
+    }
+
+    // ============================================
+    // WARM-UP RAMP untuk nomor baru
+    // Nomor yang baru dihubungkan (mis. setelah ban) TIDAK boleh langsung
+    // kirim ratusan pesan/hari. Deteksi perubahan nomor via bridge status,
+    // lalu batasi kuota harian bertahap berdasarkan umur nomor.
+    // ============================================
+    async _checkActiveNumber() {
+        const now = Date.now();
+        if (this._lastPhoneCheck && now - this._lastPhoneCheck < 60 * 60_000) return; // 1x per jam
+        this._lastPhoneCheck = now;
+
+        try {
+            const status = await whatsappService.getStatus();
+            const phone = status?.info?.phone;
+            if (!status?.success || status.status !== 'connected' || !phone) return;
+
+            const { rows } = await db.query(
+                `SELECT value FROM app_settings WHERE key = 'wa_active_phone' LIMIT 1`
+            );
+            const knownPhone = rows[0]?.value || null;
+
+            if (knownPhone !== phone) {
+                await db.query(
+                    `INSERT INTO app_settings (key, value) VALUES ('wa_active_phone', $1)
+                     ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+                    [phone]
+                );
+                await db.query(
+                    `INSERT INTO app_settings (key, value)
+                     VALUES ('wa_warmup_start', (NOW() AT TIME ZONE 'Asia/Makassar')::date::text)
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`
+                );
+                console.log(`[WA Worker] 🔥 Nomor WA ${knownPhone ? 'BERUBAH' : 'terdaftar'}: ${phone} — warm-up ramp dimulai (kuota harian dibatasi bertahap untuk lindungi nomor baru)`);
+            }
+        } catch (err) {
+            console.warn('[WA Worker] Check active number failed:', err.message);
+        }
+    }
+
+    async _getWarmupCap() {
+        try {
+            const { rows } = await db.query(
+                `SELECT value FROM app_settings WHERE key = 'wa_warmup_start' LIMIT 1`
+            );
+            if (!rows[0]?.value) return 15; // belum ada data nomor → paling konservatif
+
+            const start = new Date(rows[0].value);
+            if (isNaN(start.getTime())) return 15;
+            const days = Math.floor((Date.now() - start.getTime()) / 86_400_000);
+
+            if (days <= 1) return 15;    // hari 0-1
+            if (days <= 3) return 30;    // hari 2-3
+            if (days <= 6) return 50;    // hari 4-6
+            if (days <= 13) return 100;  // minggu ke-2
+            if (days <= 20) return 150;  // minggu ke-3
+            return Infinity;             // nomor sudah matang → pakai limit configured
+        } catch (_) {
+            return 15;
         }
     }
 
@@ -542,13 +599,16 @@ class WAWorker {
             return;
         }
 
-        // 4. Daily limit check
+        // 4. Daily limit check (configured limit DAN warm-up cap nomor baru)
         const sentToday = await this._getSentToday();
-        const dailyLimit = await this._getDailyLimit();
+        const configuredLimit = await this._getDailyLimit();
+        const warmupCap = await this._getWarmupCap();
+        const dailyLimit = Math.min(configuredLimit, warmupCap);
         if (sentToday >= dailyLimit) {
             // Once per ~10 min logging
             if (!this._lastLimitLog || now - this._lastLimitLog > 10 * 60_000) {
-                console.log(`[WA Worker] Daily limit reached (${sentToday}/${dailyLimit}) — pausing broadcasts`);
+                const capNote = warmupCap < configuredLimit ? ` (warm-up cap: ${warmupCap})` : '';
+                console.log(`[WA Worker] Daily limit reached (${sentToday}/${dailyLimit})${capNote} — pausing broadcasts`);
                 this._lastLimitLog = now;
             }
             return;
