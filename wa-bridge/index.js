@@ -789,10 +789,9 @@ app.post('/api/send', authCheck, async (req, res) => {
     if (!isReady())
         return res.status(503).json({ success: false, error: `WhatsApp not connected (status: ${clientState.status})` });
 
-<<<<<<< HEAD
     const clean = String(phone).replace(/\D/g, '');
     if (!clean) return res.status(400).json({ success: false, error: 'Invalid phone number' });
-=======
+
     // Safety-net floor — see REVISION NOTES at top of file. The real anti-ban
     // cadence (minutes, breaks, warm-up) is enforced by wa-worker.js on the
     // backend; this just stops any caller (bug, missed queue hookup, future
@@ -803,10 +802,6 @@ app.post('/api/send', authCheck, async (req, res) => {
         console.warn(`[RATE LIMIT] /api/send ditolak — ${retryAfterMs}ms lagi sebelum boleh kirim`);
         return res.status(429).json({ success: false, error: 'rate_limited', retry_after_ms: retryAfterMs });
     }
-
-    const jid = toJid(phone);
-    if (!jid) return res.status(400).json({ success: false, error: 'Invalid phone number' });
->>>>>>> f85cc99 (update some features)
 
     try {
         // ANTI-BAN: pastikan nomor terdaftar di WhatsApp sebelum kirim
