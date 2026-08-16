@@ -9,6 +9,13 @@
 // Deployed to Railway. No Chromium needed.
 // Anti-ban orchestration (warm-up, delays, working hours) lives
 // in the BACKEND worker — this bridge just transports messages.
+//
+// REVISION NOTES (2026-08 review):
+// - /api/send now enforces a small MIN_SEND_INTERVAL_MS floor. This is NOT a
+//   replacement for wa-worker.js's pacing (minutes, breaks, warm-up) — it's a
+//   safety net so pacing survives even if a caller bypasses the backend worker
+//   (a bug, a forgotten queue hookup, a future integration hitting this bridge
+//   directly). The real cadence still lives entirely in wa-worker.js.
 // ============================================
 
 require('dotenv').config();
@@ -91,6 +98,11 @@ const RECONNECT_MAX_DELAY = 60_000;
 const ACTIVE_HOUR_START = parseInt(process.env.ACTIVE_HOUR_START ?? '8',  10); // 08:00 WITA
 const ACTIVE_HOUR_END   = parseInt(process.env.ACTIVE_HOUR_END   ?? '22', 10); // 22:00 WITA
 
+// Floor keamanan di level bridge — lihat REVISION NOTES di atas. Backend worker
+// tetap yang mengatur ritme "manusiawi" sebenarnya (menit, jeda, warm-up); ini
+// cuma jaring pengaman terakhir.
+const MIN_SEND_INTERVAL_MS = parseInt(process.env.MIN_SEND_INTERVAL_MS ?? '20000', 10);
+
 // ============================================
 // STATE
 // ============================================
@@ -110,6 +122,7 @@ let reconnectTimer    = null;
 let sleepTimer        = null;
 let isSleeping        = false;
 let isShuttingDown    = false;
+let lastSendAt        = 0;   // epoch ms — dipakai floor MIN_SEND_INTERVAL_MS di /api/send
 
 // Cache hasil onWhatsApp (cek nomor terdaftar + JID kanonis).
 // Mencegah USync query berulang (rate-limited) dan mencegah kirim
@@ -776,8 +789,24 @@ app.post('/api/send', authCheck, async (req, res) => {
     if (!isReady())
         return res.status(503).json({ success: false, error: `WhatsApp not connected (status: ${clientState.status})` });
 
+<<<<<<< HEAD
     const clean = String(phone).replace(/\D/g, '');
     if (!clean) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+=======
+    // Safety-net floor — see REVISION NOTES at top of file. The real anti-ban
+    // cadence (minutes, breaks, warm-up) is enforced by wa-worker.js on the
+    // backend; this just stops any caller (bug, missed queue hookup, future
+    // integration) from blasting the bridge faster than a sane minimum.
+    const sinceLastSend = Date.now() - lastSendAt;
+    if (sinceLastSend < MIN_SEND_INTERVAL_MS) {
+        const retryAfterMs = MIN_SEND_INTERVAL_MS - sinceLastSend;
+        console.warn(`[RATE LIMIT] /api/send ditolak — ${retryAfterMs}ms lagi sebelum boleh kirim`);
+        return res.status(429).json({ success: false, error: 'rate_limited', retry_after_ms: retryAfterMs });
+    }
+
+    const jid = toJid(phone);
+    if (!jid) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+>>>>>>> f85cc99 (update some features)
 
     try {
         // ANTI-BAN: pastikan nomor terdaftar di WhatsApp sebelum kirim
@@ -813,6 +842,7 @@ app.post('/api/send', authCheck, async (req, res) => {
             } catch (_) {}
         }
         const result      = await sock.sendMessage(jid, { text: message });
+        lastSendAt = Date.now();
         // Simpan langsung agar retry receipt yang datang cepat (sebelum echo
         // messages.upsert) tetap bisa dijawab getMessage.
         rememberMessage(result?.key, result?.message);
