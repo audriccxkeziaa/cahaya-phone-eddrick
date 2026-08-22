@@ -1854,7 +1854,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                         <div>
                                             <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Pembayaran</div>
                                             ${(function(){
-                                                const PAYS=['Paid Cash','Paid Credit - Akulaku','Paid Credit - Avanto','Paid Credit - FinancePlus','Paid Credit - Home Credit Indonesia','Paid Credit - Indodana','Paid Credit - KreditPlus','Paid Credit - Kredivo','Paid Credit - Shopeepay Later','Kartu Kredit','Kartu Debit'];
+                                                const PAYS=['Paid Cash','Paid Credit - Akulaku','Paid Credit - Avanto','Paid Credit - FinancePlus','Paid Credit - Home Credit Indonesia','Paid Credit - Indodana','Paid Credit - KreditPlus','Paid Credit - Kredivo','Paid Credit - Shopeepay Later','Yess Kredit','Kartu Kredit','Kartu Debit'];
                                                 const cur=(p.metode_pembayaran||'').trim();
                                                 const curL=cur.toLowerCase();
                                                 const match=PAYS.find(m=>m.toLowerCase()===curL);
