@@ -14,6 +14,7 @@
 // - Sudah pernah Belanja → chat lagi → TIDAK bikin record baru
 // ============================================
 
+const crypto = require('crypto');
 const db = require('../config/database');
 const googleService = require('../config/google');
 const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
@@ -303,6 +304,147 @@ exports.handleWhatsAppWebhook = async (req, res) => {
         res.json({ success: false, message: 'Error processing webhook', error: error.message });
     }
 };
+
+// ============================================
+// WEBHOOK META CLOUD API (WA_PROVIDER=cloud)
+//
+// Berbeda dari webhook wa-bridge: payload-nya bersarang
+// (entry[].changes[].value) dan diautentikasi lewat tanda tangan HMAC, bukan
+// secret di header. Endpoint-nya terpisah supaya jalur Baileys tetap utuh.
+// ============================================
+
+// Meta memakai kata status; whatsapp_logs memakai skala ack Baileys.
+// 'sent' sengaja dipetakan ke 2 — updateMessageStatus mengabaikan ack < 3,
+// dan baris log memang sudah berstatus SENT saat kiriman berhasil.
+const META_ACK = { sent: 2, delivered: 3, read: 4 };
+
+/**
+ * Verifikasi pendaftaran webhook. Dipanggil Meta SEKALI saat Callback URL
+ * disimpan di App Dashboard.
+ * GET /api/webhook/meta?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...
+ *
+ * Harus membalas challenge sebagai teks polos — kalau dibungkus JSON,
+ * Meta menolak pendaftarannya.
+ */
+exports.verifyMetaWebhook = (req, res) => {
+    const expected = process.env.META_VERIFY_TOKEN;
+    if (!expected) {
+        console.error('[META WEBHOOK] META_VERIFY_TOKEN belum diset — verifikasi ditolak');
+        return res.status(503).type('text/plain').send('META_VERIFY_TOKEN not configured');
+    }
+
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token && safeEqual(String(token), expected)) {
+        console.log('[META WEBHOOK] Verifikasi berhasil — webhook terdaftar');
+        return res.status(200).type('text/plain').send(String(challenge ?? ''));
+    }
+
+    console.warn('[META WEBHOOK] Verifikasi ditolak dari', req.ip);
+    return res.sendStatus(403);
+};
+
+/**
+ * Penerima event Meta.
+ * POST /api/webhook/meta
+ */
+exports.handleMetaWebhook = async (req, res) => {
+    const appSecret = process.env.META_APP_SECRET;
+    if (!appSecret) {
+        console.error('[META WEBHOOK] META_APP_SECRET belum diset — menolak semua trafik webhook');
+        return res.sendStatus(503);
+    }
+
+    const signature = req.headers['x-hub-signature-256'];
+    if (!signature || !req.rawBody) {
+        console.warn('[META WEBHOOK] Ditolak — tanda tangan atau raw body tidak ada');
+        return res.sendStatus(401);
+    }
+
+    const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(req.rawBody).digest('hex');
+    if (!safeEqual(String(signature), expected)) {
+        console.warn('[META WEBHOOK] Ditolak — tanda tangan tidak cocok, dari', req.ip);
+        return res.sendStatus(401);
+    }
+
+    // Balas dulu, proses belakangan. Meta mengirim ulang lalu MENONAKTIFKAN
+    // webhook yang lambat merespons — pemrosesan tidak boleh menahan respons.
+    res.sendStatus(200);
+
+    try {
+        await processMetaPayload(req.body);
+    } catch (err) {
+        console.error('[META WEBHOOK] Gagal memproses payload:', err.message);
+    }
+};
+
+async function processMetaPayload(body) {
+    const entries = Array.isArray(body?.entry) ? body.entry : [];
+
+    for (const entry of entries) {
+        for (const change of (entry?.changes || [])) {
+            const value = change?.value;
+            if (!value) continue;
+
+            const contactName = value.contacts?.[0]?.profile?.name || '';
+
+            // Chat masuk — pakai ulang handleIncomingMessage supaya seluruh aturan
+            // customer, opt-out, ignore-list, dan Google Contacts tetap satu jalur.
+            for (const m of (value.messages || [])) {
+                if (m?.type !== 'text') {
+                    console.log(`[META WEBHOOK] Pesan tipe '${m?.type}' dari ${m?.from} diabaikan (hanya teks yang diproses)`);
+                    continue;
+                }
+                const text = m.text?.body || '';
+                if (!text) continue;
+
+                await exports.handleIncomingMessage({
+                    sender: m.from,
+                    message: text,
+                    pushname: contactName,
+                    wa_message_id: m.id
+                });
+            }
+
+            // Status pengiriman
+            for (const s of (value.statuses || [])) {
+                await applyMetaStatus(s);
+            }
+        }
+    }
+}
+
+async function applyMetaStatus(s) {
+    if (!s?.id) return;
+
+    if (s.status === 'failed') {
+        const err = s.errors?.[0] || {};
+        const code = String(err.code ?? 'META_FAILED');
+        const detail = String(err.title || err.message || 'Gagal menurut Meta').slice(0, 500);
+
+        // Kegagalan yang dilaporkan Meta bersifat final untuk pesan itu —
+        // template yang sama akan ditolak lagi. Tutup barisnya, jangan diulang.
+        await db.query(
+            `UPDATE whatsapp_logs SET
+                status = 'FAILED', error_code = $1, error_detail = $2,
+                retry_count = max_retries, next_retry_at = NULL, updated_at = NOW()
+              WHERE wa_message_id = $3
+                AND status NOT IN ('FAILED', 'CANCELLED')`,
+            [code, detail, s.id]
+        ).catch(e => console.warn('[META WEBHOOK] Update status gagal:', e.message));
+
+        console.warn(`[META WEBHOOK] Pesan ${s.id} GAGAL (${code}): ${detail}`);
+        return;
+    }
+
+    const ack = META_ACK[s.status];
+    if (!ack) return;
+
+    const whatsappService = require('../config/whatsapp');
+    await whatsappService.updateMessageStatus(s.id, ack);
+}
 
 /**
  * Test webhook endpoint

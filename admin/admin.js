@@ -2826,14 +2826,24 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         const container = document.getElementById('waStatusContainer');
         const res = await apiCall('/admin/wa/status');
 
+        const isCloud = res?.provider === 'cloud' || res?.mode === 'meta_cloud_api';
+
+        // Cloud API tidak punya sesi — tidak ada yang bisa diputus atau di-scan ulang.
+        const sessionActions = document.getElementById('waSessionActions');
+        if (sessionActions) sessionActions.style.display = isCloud ? 'none' : 'flex';
+
         if (!res || !res.success) {
-            const errorMsg = res?.error || 'Tidak bisa terhubung ke WA Bridge';
+            const errorMsg = res?.error || res?.lastError || (isCloud
+                ? 'Tidak bisa menghubungi Graph API Meta'
+                : 'Tidak bisa terhubung ke WA Bridge');
             container.innerHTML = `
                 <div style="text-align:center;padding:30px;">
                     <div style="font-size:48px;margin-bottom:12px;">&#x26A0;</div>
-                    <h4 style="margin:0 0 8px;color:#DC2626;">WA Bridge Tidak Tersedia</h4>
+                    <h4 style="margin:0 0 8px;color:#DC2626;">${isCloud ? 'Meta Cloud API Tidak Tersedia' : 'WA Bridge Tidak Tersedia'}</h4>
                     <p class="muted" style="margin:0 0 16px;">${errorMsg}</p>
-                    <p class="muted" style="font-size:12px;">Pastikan WA Bridge sudah di-deploy di Railway dan WA_BRIDGE_URL sudah diset di environment variables.</p>
+                    <p class="muted" style="font-size:12px;">${isCloud
+                        ? 'Cek META_ACCESS_TOKEN (token bisa kedaluwarsa) dan META_PHONE_NUMBER_ID di environment variables.'
+                        : 'Pastikan WA Bridge sudah di-deploy di Railway dan WA_BRIDGE_URL sudah diset di environment variables.'}</p>
                 </div>
             `;
             // Stop polling
@@ -2848,6 +2858,47 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         if (sentEl) sentEl.textContent = `${messagesSentToday || 0} / ${dailyLimit || 200}`;
         const limitEl = document.getElementById('waDailyLimit');
         if (limitEl && dailyLimit) limitEl.value = dailyLimit;
+
+        // ============================================
+        // MODE RESMI (Meta Cloud API)
+        // Tidak ada QR dan tidak ada sesi yang bisa putus. Yang perlu dipantau
+        // admin adalah quality rating: turun ke kuning/merah adalah peringatan
+        // dini sebelum Meta menurunkan batas kirim.
+        // ============================================
+        if (isCloud) {
+            if (waStatusInterval) { clearInterval(waStatusInterval); waStatusInterval = null; }
+
+            const rating = String(res.qualityRating || 'UNKNOWN').toUpperCase();
+            const ratingStyle = {
+                GREEN:  { color: '#25D366', label: 'Baik',        note: 'Kualitas nomor sehat.' },
+                YELLOW: { color: '#D97706', label: 'Menengah',    note: 'Ada keluhan dari penerima. Kurangi broadcast dan periksa isi pesan.' },
+                RED:    { color: '#DC2626', label: 'Buruk',       note: 'Batas kirim berisiko diturunkan Meta. Hentikan broadcast sementara.' }
+            }[rating] || { color: '#6B7280', label: 'Belum ada data', note: 'Rating muncul setelah ada cukup pesan terkirim.' };
+
+            container.innerHTML = `
+                <div style="text-align:center;padding:20px;">
+                    <div style="width:80px;height:80px;border-radius:50%;background:#25D366;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="white"><path d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.832-1.438A9.955 9.955 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2zm0 18c-1.66 0-3.203-.51-4.484-1.375l-.316-.191-2.789.828.779-2.715-.215-.336A7.943 7.943 0 014 12c0-4.411 3.589-8 8-8s8 3.589 8 8-3.589 8-8 8z"/></svg>
+                    </div>
+                    <h3 style="margin:0 0 4px;color:#25D366;">WhatsApp Business API Resmi</h3>
+                    <p style="margin:0 0 4px;font-size:16px;font-weight:600;">${res.verifiedName || info?.name || '-'}</p>
+                    <p class="muted" style="margin:0 0 12px;">+${info?.phone || '-'}</p>
+
+                    <div style="padding:12px;background:rgba(0,0,0,0.03);border-radius:8px;margin-bottom:10px;">
+                        <div style="font-size:13px;margin-bottom:4px;">Kualitas nomor:
+                            <strong style="color:${ratingStyle.color};">${ratingStyle.label}</strong>
+                        </div>
+                        <div class="muted" style="font-size:12px;">${ratingStyle.note}</div>
+                    </div>
+
+                    <div style="padding:12px;background:rgba(37,211,102,0.08);border-radius:8px;">
+                        <span style="font-size:13px;">Pesan terkirim hari ini: <strong style="color:#25D366;">${messagesSentToday || 0}</strong> / ${dailyLimit || 200}</span>
+                        <div class="muted" style="font-size:11px;margin-top:4px;">Batas harian di mode resmi berfungsi sebagai kontrol biaya, bukan pencegah blokir.</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
 
         if ((status === 'ready' || status === 'connected' || status === 'open') && info) {
             // Connected

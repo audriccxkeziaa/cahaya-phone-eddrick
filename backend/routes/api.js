@@ -91,6 +91,13 @@ router.post('/form-submit', formLimiter, formController.submitForm);
 router.post('/webhook/whatsapp', webhookLimiter, webhookController.handleWhatsAppWebhook);
 router.get('/webhook/test', webhookController.testWebhook);
 
+// WhatsApp webhook — Meta Cloud API resmi (WA_PROVIDER=cloud).
+// Bentuk payload-nya berbeda dari wa-bridge, jadi endpoint-nya terpisah.
+// GET dipakai Meta sekali saat pendaftaran webhook (hub.challenge).
+// POST diverifikasi lewat X-Hub-Signature-256 di dalam handler.
+router.get('/webhook/meta', webhookController.verifyMetaWebhook);
+router.post('/webhook/meta', webhookLimiter, webhookController.handleMetaWebhook);
+
 // Quick-sync contacts (protected by secret key in Authorization header)
 router.get('/sync/contacts', adminController.quickSyncVCF);
 router.get('/sync/list', adminController.quickSyncList);

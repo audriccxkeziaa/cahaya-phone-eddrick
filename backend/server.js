@@ -92,7 +92,13 @@ app.use(helmet({
 
 // Cap request body at 50kb — legitimate form/webhook payloads are well under 5kb.
 // Without this cap a bot can POST 100kb bodies repeatedly to fill the DB / OOM the process.
-app.use(express.json({ limit: '50kb' }));
+// `verify` menyimpan body mentah SEBELUM di-parse. Webhook Meta menandatangani
+// byte aslinya (X-Hub-Signature-256), jadi tanda tangan tidak bisa diverifikasi
+// dari objek hasil JSON.parse — urutan key dan spasi bisa berbeda.
+app.use(express.json({
+    limit: '50kb',
+    verify: (req, _res, buf) => { req.rawBody = buf; }
+}));
 app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 
 // Cookie parsing — required for httpOnly auth_token and csrf_token reads.
@@ -170,6 +176,36 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found' });
 });
+
+// ============================================
+// VALIDASI PROVIDER WHATSAPP
+//
+// Kalau WA_PROVIDER=cloud tapi kredensial Meta tidak lengkap, server SENGAJA
+// menolak start. Diam-diam jatuh kembali ke Baileys jauh lebih berbahaya:
+// pesan tetap terkirim lewat jalur tidak resmi tanpa ada yang menyadari.
+// ============================================
+const WA_PROVIDER = String(process.env.WA_PROVIDER || 'baileys').trim().toLowerCase();
+
+if (WA_PROVIDER === 'cloud') {
+    const required = [
+        'META_PHONE_NUMBER_ID',
+        'META_ACCESS_TOKEN',
+        'META_APP_SECRET',
+        'META_VERIFY_TOKEN'
+    ];
+    const missing = required.filter(k => !String(process.env[k] || '').trim());
+    if (missing.length > 0) {
+        console.error('\n========================================');
+        console.error('  WA_PROVIDER=cloud tapi env belum lengkap');
+        console.error('  Kurang: ' + missing.join(', '));
+        console.error('  Isi variabel di atas, atau kembalikan WA_PROVIDER=baileys.');
+        console.error('========================================\n');
+        process.exit(1);
+    }
+    console.log(`[WA] Provider: Meta Cloud API resmi (${process.env.META_API_VERSION || 'v21.0'})`);
+} else {
+    console.log('[WA] Provider: Baileys via wa-bridge');
+}
 
 // ============================================
 // START SERVER

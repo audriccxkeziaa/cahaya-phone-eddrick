@@ -19,6 +19,11 @@ const whatsappService = require('./whatsapp');
 const { sanitizePhone } = require('../utils/phoneUtils');
 require('dotenv').config();
 
+// Provider aktif. Seluruh strategi anti-ban di file ini dibangun untuk Baileys;
+// di Meta Cloud API resmi tidak ada yang perlu disamarkan, jadi pacing-nya
+// dilonggarkan drastis di bawah (lihat blok "PENYESUAIAN PROVIDER RESMI").
+const IS_CLOUD = String(process.env.WA_PROVIDER || 'baileys').trim().toLowerCase() === 'cloud';
+
 // Spintax parser — resolves {opt1|opt2|opt3} to one random option.
 // Handles nested spintax by iterating from innermost {} outward.
 // REQUIRES at least one `|` inside the braces — single-token braces like {nama}
@@ -139,9 +144,54 @@ const CONFIG = {
     // devices. Wait this long after each reconnect before resuming sends.
     bridgeReconnectSettleMs: 120_000,
 
+    // Lantai minimum jeda antar pesan. Di Baileys 1 menit; di Cloud API tidak
+    // ada alasan menahan selama itu (lihat blok penyesuaian di bawah).
+    minDelayMs: 60_000,
+
     // Daily limit fallback if not in DB
     defaultDailyLimit: 200
 };
+
+// ============================================
+// PENYESUAIAN PROVIDER RESMI (WA_PROVIDER=cloud)
+//
+// Delay menit-an, break berkala, dan warm-up nomor ada untuk menghindari
+// deteksi WhatsApp terhadap Baileys. Di Cloud API semuanya tidak relevan —
+// yang berlaku messaging tier dan quality rating dari Meta, dan keduanya
+// tidak dipengaruhi kecepatan kirim kita.
+//
+// Yang SENGAJA dipertahankan di mode cloud:
+// - Jam kerja 08:00-22:00 WITA. Ini soal sopan santun ke customer, bukan
+//   anti-ban. Jangan kirim ucapan ulang tahun jam 3 pagi.
+// - Daily limit. Di mode cloud fungsinya berubah dari rem ban jadi REM BIAYA —
+//   tiap template yang terkirim ditagih Meta.
+// ============================================
+if (IS_CLOUD) {
+    const FAST = { min: 2_000, max: 5_000 };
+    const NEVER = 1_000_000;   // ambang break yang tidak akan pernah tercapai
+
+    CONFIG.minDelayMs = 2_000;
+    CONFIG.startupCooldownMs = 5_000;
+    CONFIG.bridgeReconnectSettleMs = 0;   // tidak ada sesi enkripsi yang perlu sync
+
+    CONFIG.broadcast.warmupBaseMs = { ...FAST };
+    CONFIG.broadcast.normalBaseMs = { ...FAST };
+    CONFIG.broadcast.warmupJitterMs = 1_000;
+    CONFIG.broadcast.normalJitterMs = 1_000;
+    CONFIG.broadcast.warmupThreshold = 0;
+    CONFIG.broadcast.breakEveryRange = { min: NEVER, max: NEVER };
+
+    CONFIG.autoReply.baseDelayMs = { ...FAST };
+    CONFIG.autoReply.jitterMs = 1_000;
+    CONFIG.autoReply.breakEveryRange = { min: NEVER, max: NEVER };
+
+    CONFIG.birthday.baseDelayMs = { ...FAST };
+    CONFIG.birthday.jitterMs = 1_000;
+    CONFIG.birthday.breakEveryRange = { min: NEVER, max: NEVER };
+
+    CONFIG.retry.baseDelayMs = { min: 30_000, max: 60_000 };
+    CONFIG.retry.jitterMs = 10_000;
+}
 
 class WAWorker {
     constructor() {
@@ -319,6 +369,9 @@ class WAWorker {
     }
 
     async _getWarmupCap() {
+        // Warm-up nomor baru hanya relevan untuk Baileys. Nomor Cloud API tidak
+        // perlu "dipanaskan" — kapasitasnya diatur messaging tier dari Meta.
+        if (IS_CLOUD) return Infinity;
         try {
             const { rows } = await db.query(
                 `SELECT value FROM app_settings WHERE key = 'wa_warmup_start' LIMIT 1`
@@ -364,7 +417,7 @@ class WAWorker {
             this.autoReplyMsgsSinceBreak = 0;
             const profile = this._ensureDailyProfile().autoReply;
             const jitter = this._randInt(-CONFIG.autoReply.jitterMs, CONFIG.autoReply.jitterMs);
-            const warmupDelay = Math.max(60_000, profile.base + jitter);
+            const warmupDelay = Math.max(CONFIG.minDelayMs, profile.base + jitter);
             if (now >= this.nextAutoReplyAllowedAt) {
                 this.nextAutoReplyAllowedAt = Date.now() + warmupDelay;
             }
@@ -455,18 +508,27 @@ class WAWorker {
             console.warn('[WA Worker] Auto-reply opt-out check failed:', err.message);
         }
 
-        // Send via bridge directly (this log row already exists — don't double-log via sendText)
+        // Kirim untuk baris log yang sudah ada — jangan lewat sendText, itu akan
+        // membuat baris log kedua. Provider yang menentukan transportnya.
         try {
-            // Anti-fingerprint: vary every message at send-time (random closing +
-            // invisible zero-width spaces) so identical-template auto-replies are not
-            // flagged as bot spam by WA. Applied here so it also covers rows that were
-            // re-queued via SQL (e.g. recovery batch) which never went through enqueue.
-            const sendRes = await whatsappService._bridgeCall('POST', '/api/send', {
-                phone: row.phone,
-                message: variasiPesan(row.message_body, null),
-                typing: true
+            // Anti-fingerprint: variasikan tiap pesan saat kirim (penutup acak) supaya
+            // auto-reply bertemplate sama tidak terdeteksi spam bot. Hanya untuk Baileys —
+            // di Cloud API isi template tidak boleh diubah sedikit pun.
+            const outgoing = IS_CLOUD ? row.message_body : variasiPesan(row.message_body, null);
+
+            const sendRes = await whatsappService.sendForExistingLog(row.phone, outgoing, {
+                typing: true,
+                category: 'auto_reply'
             });
-            const waMessageId = sendRes?.wa_message_id || null;
+
+            if (!sendRes.success) {
+                const failure = new Error(sendRes.error || 'send failed');
+                failure.retryable = sendRes.retryable;
+                failure.errorCode = sendRes.error_code;
+                throw failure;
+            }
+
+            const waMessageId = sendRes.wa_message_id || null;
 
             await db.query(
                 `UPDATE whatsapp_logs SET status = 'SENT', wa_message_id = $1, sent_at = NOW(), updated_at = NOW() WHERE id = $2`,
@@ -494,11 +556,16 @@ class WAWorker {
             this.autoReplyMsgsSinceBreak += 1;
             console.log(`[WA Worker] ✉️ Auto-reply sent to ${row.phone} (${this.autoReplyMsgsSinceBreak}/${this.autoReplyNextBreakAt} until break)`);
         } catch (err) {
-            // Distinguish "bridge is temporarily unreachable" (requeue) vs "real send
-            // failed" (give up). For 503/timeout/connection refused, the message hasn't
-            // been delivered to WA at all — putting it back in the queue keeps the
-            // customer's auto-reply alive across Railway restarts and Baileys reconnects.
-            const transient = /503|timeout|ECONN|ETIMEDOUT|ENOTFOUND|bridge|not connected/i.test(err.message || '');
+            // Bedakan "transport sedang tidak bisa dihubungi" (antre ulang) dari
+            // "kiriman benar-benar gagal" (menyerah). Untuk 503/timeout/koneksi
+            // ditolak, pesannya belum sampai ke WA sama sekali — dikembalikan ke
+            // antrean supaya auto-reply customer selamat melewati restart Railway.
+            //
+            // Provider sudah mengklasifikasikan ini lewat `retryable`; regex hanya
+            // dipakai untuk error yang benar-benar dilempar (mis. kegagalan DB).
+            const transient = typeof err.retryable === 'boolean'
+                ? err.retryable
+                : /503|timeout|ECONN|ETIMEDOUT|ENOTFOUND|bridge|not connected/i.test(err.message || '');
             if (transient) {
                 await db.query(
                     `UPDATE whatsapp_logs SET status = 'QUEUED', error_detail = $1, updated_at = NOW() WHERE id = $2`,
@@ -532,7 +599,7 @@ class WAWorker {
             console.log(`[WA Worker] ☕ Auto-reply BREAK for ${Math.round(breakMs / 60_000)} min`);
         } else {
             const jitter = this._randInt(-CONFIG.autoReply.jitterMs, CONFIG.autoReply.jitterMs);
-            const delay = Math.max(60_000, profile.base + jitter);  // floor at 1 min
+            const delay = Math.max(CONFIG.minDelayMs, profile.base + jitter);  // floor at 1 min
             this.nextAutoReplyAllowedAt = Date.now() + delay;
         }
     }
@@ -640,7 +707,7 @@ class WAWorker {
     _scheduleNextRetry() {
         const base = this._randInt(CONFIG.retry.baseDelayMs.min, CONFIG.retry.baseDelayMs.max);
         const jitter = this._randInt(-CONFIG.retry.jitterMs, CONFIG.retry.jitterMs);
-        this.nextRetryAllowedAt = Date.now() + Math.max(60_000, base + jitter);
+        this.nextRetryAllowedAt = Date.now() + Math.max(CONFIG.minDelayMs, base + jitter);
     }
 
     // ============================================
@@ -685,7 +752,11 @@ class WAWorker {
 
         // 6. Send!
         try {
-            const variedMsg = variasiPesan(recipient.broadcast_message, recipient.customer_name);
+            // Di Cloud API isi pesan masuk sebagai parameter template — tidak boleh
+            // diacak, cukup isi placeholder {nama}.
+            const variedMsg = IS_CLOUD
+                ? String(recipient.broadcast_message || '').replace(/\{nama\}/gi, recipient.customer_name || 'Kak')
+                : variasiPesan(recipient.broadcast_message, recipient.customer_name);
 
             const result = await whatsappService.sendBroadcastMessage(
                 recipient.customer_phone,
@@ -758,7 +829,7 @@ class WAWorker {
         const base = inWarmup ? profile.warmupBase : profile.normalBase;
         const jitterCfg = inWarmup ? CONFIG.broadcast.warmupJitterMs : CONFIG.broadcast.normalJitterMs;
         const jitter = this._randInt(-jitterCfg, jitterCfg);
-        const delay = Math.max(60_000, base + jitter);
+        const delay = Math.max(CONFIG.minDelayMs, base + jitter);
         this.nextBroadcastAllowedAt = now + delay;
 
         // Verbose log only outside production — saves RAM in log buffer + Railway egress
@@ -968,7 +1039,7 @@ class WAWorker {
             this.birthdayMsgsSinceBreak = 0;
             const profile = this._ensureDailyProfile().birthday;
             const jitter = this._randInt(-CONFIG.birthday.jitterMs, CONFIG.birthday.jitterMs);
-            this.nextBirthdayAllowedAt = Date.now() + Math.max(60_000, profile.base + jitter);
+            this.nextBirthdayAllowedAt = Date.now() + Math.max(CONFIG.minDelayMs, profile.base + jitter);
             console.log(`[WA Worker] 🎂 Birthday queue warm-up for ${todayWita} — delay ${Math.round((this.nextBirthdayAllowedAt - Date.now()) / 1000)}s before first send`);
             return;
         }
@@ -1113,7 +1184,7 @@ class WAWorker {
             console.log(`[WA Worker] 🎂☕ Birthday BREAK for ${Math.round(breakMs / 60_000)} min`);
         } else {
             const jitter = this._randInt(-CONFIG.birthday.jitterMs, CONFIG.birthday.jitterMs);
-            const delay = Math.max(60_000, profile.base + jitter);
+            const delay = Math.max(CONFIG.minDelayMs, profile.base + jitter);
             this.nextBirthdayAllowedAt = Date.now() + delay;
         }
     }

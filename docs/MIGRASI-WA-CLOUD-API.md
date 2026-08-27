@@ -1,11 +1,11 @@
 # Migrasi WhatsApp: Baileys → Meta Cloud API Resmi
 
-Dokumen ini adalah **spesifikasi kerja**. Bagian A dikerjakan oleh coding agent.
-Bagian B dikerjakan manusia di dashboard Meta. Bagian C adalah urutan go-live.
+Bagian A (kode) **sudah selesai dan ada di repo**. Bagian B dikerjakan manusia
+di dashboard Meta saat klien setuju. Bagian C adalah urutan go-live.
 
-Kode dan setup **dipisah total**: setelah Bagian A selesai, program bisa jalan
-seperti biasa memakai Baileys. Cloud API baru aktif ketika `WA_PROVIDER=cloud`
-diisi di environment. Rollback = kembalikan env var ke `baileys`.
+Kode dan setup **dipisah total**: program tetap berjalan memakai Baileys.
+Cloud API baru aktif ketika `WA_PROVIDER=cloud` diisi di environment.
+Rollback = kembalikan env var ke `baileys` lalu restart.
 
 ---
 
@@ -34,345 +34,74 @@ Path `/api/webhook/*` sudah dikecualikan dari CSRF di
 
 ---
 
-# BAGIAN A — Dikerjakan coding agent
+# BAGIAN A — SUDAH DIIMPLEMENTASIKAN
 
-## Task 1 — Pecah adapter jadi dua, tambahkan pemilih provider
+Status: **selesai dan ada di repo**. Program masih berjalan memakai Baileys
+persis seperti sebelumnya; jalur Cloud API baru aktif kalau `WA_PROVIDER=cloud`.
 
-**Tujuan:** `require('../config/whatsapp')` mengembalikan adapter Baileys atau
-adapter Cloud API tergantung env, tanpa satu pun controller berubah.
+## File yang dibuat
 
-Langkah:
-
-1. `git mv backend/config/whatsapp.js backend/config/whatsapp-baileys.js`
-   (isinya tidak diubah sama sekali di task ini).
-2. Buat `backend/config/whatsapp.js` baru berisi **hanya** pemilih:
-
-```js
-// Pemilih provider WhatsApp. Controller cukup require('./whatsapp') dan tidak
-// perlu tahu transport-nya apa. WA_PROVIDER=cloud → Meta Cloud API resmi.
-// Nilai lain / kosong → Baileys (default, perilaku lama).
-const provider = (process.env.WA_PROVIDER || 'baileys').toLowerCase();
-module.exports = provider === 'cloud'
-    ? require('./whatsapp-cloud')
-    : require('./whatsapp-baileys');
-```
-
-3. `backend/config/wa-worker.js` meng-import `spinText` yang dipakai balik oleh
-   `whatsapp-baileys.js` (`require('./wa-worker')` di dalam `enqueueAutoReply`).
-   Pastikan circular require ini tetap bekerja setelah rename. Jalankan
-   `node --check` pada ketiga file dan pastikan server masih bisa start.
-
-**Syarat penerimaan:** tanpa `WA_PROVIDER`, aplikasi berjalan persis seperti
-sebelumnya — kirim, antre, broadcast, ulang tahun, panel admin, semua sama.
-
----
-
-## Task 2 — Hapus pemanggilan `_bridgeCall` dari worker
-
-**Masalah:** `backend/config/wa-worker.js` memanggil
-`whatsappService._bridgeCall('POST', '/api/send', ...)` langsung saat mengirim
-auto-reply antre dan broadcast. Method itu khusus Baileys dan tidak akan ada di
-adapter Cloud API.
-
-Langkah:
-
-1. Tambahkan method publik baru di `whatsapp-baileys.js`:
-
-```js
-// Kirim untuk baris whatsapp_logs yang SUDAH ada (dipakai worker saat
-// menguras antrean). Berbeda dari sendText yang membuat baris log baru.
-// Return: { success, wa_message_id, error, error_code, retryable }
-async sendForExistingLog(phone, message, { typing = true, category = 'text' } = {}) { ... }
-```
-
-   Isinya: bungkus `_bridgeCall('POST', '/api/send', ...)` dengan penanganan
-   error yang sama seperti di `sendText` (klasifikasi `retryable`, deteksi
-   `NOT_ON_WHATSAPP`), **tapi tanpa** `_insertLog` / `_updateLog` — pemanggil
-   yang mengurus barisnya.
-
-2. Ganti semua pemanggilan `whatsappService._bridgeCall('POST', '/api/send', …)`
-   di `wa-worker.js` menjadi `whatsappService.sendForExistingLog(…)`.
-   Perilaku dan logging di worker harus tetap sama.
-
-3. `whatsappService._incrementDailyCounter(...)` juga dipanggil worker — biarkan,
-   tapi pastikan adapter Cloud API nanti mengekspornya juga (Task 3).
-
-**Syarat penerimaan:** tidak ada lagi kemunculan `_bridgeCall` di luar
-`whatsapp-baileys.js`. Verifikasi: `grep -rn "_bridgeCall" backend/ wa-bridge/`
-
----
-
-## Task 3 — Buat adapter Cloud API
-
-Buat `backend/config/whatsapp-cloud.js`. **Permukaan publiknya harus identik**
-dengan `whatsapp-baileys.js`. Daftar wajib:
-
-| Method | Perilaku di Cloud API |
+| File | Isi |
 |---|---|
-| `sendText(phone, message, {category, skipOptCheck})` | Lihat "Logika jendela 24 jam" |
-| `sendForExistingLog(phone, message, {category})` | Sama, tanpa buat baris log |
-| `sendMessage(phone, message)` | Delegasi ke `sendText` |
-| `sendBroadcastMessage(phone, message)` | `sendText` dengan `category: 'broadcast'` |
-| `sendBirthdayGreeting(customer, customMessage)` | `sendText` dengan `category: 'birthday'` |
-| `enqueueAutoReply(customer, opts)` | **Salin apa adanya** dari versi Baileys — cuma INSERT ke `whatsapp_logs`, tidak menyentuh transport |
-| `isNumberRegistered(phone)` | Cloud API tidak punya cek ini. Return `{ registered: true, unchecked: true }` |
-| `getStatus()` | Lihat Task 6 |
-| `isConfigured()` | `true` kalau `META_PHONE_NUMBER_ID` dan `META_ACCESS_TOKEN` terisi |
-| `restartBridge()` / `disconnectBridge()` | No-op, return `{ success: true, noop: true }` |
-| `getDailyStats()`, `getStats()`, `setDailyLimit()`, `setAutoReplyMessage()`, `loadSettings()`, `updateMessageStatus()`, `_insertLog()`, `_updateLog()`, `_updateLogFailed()`, `_isOptedOut()`, `_incrementDailyCounter()`, `_getAutoReplyTemplate()` | **Salin apa adanya** dari versi Baileys — semuanya murni operasi database |
+| `backend/config/whatsapp.js` | Pemilih provider. Membaca `WA_PROVIDER`, mengembalikan adapter yang sesuai. Controller tidak berubah sama sekali. |
+| `backend/config/wa-service-base.js` | Semua logika bersama: logging `whatsapp_logs`, opt-out, statistik harian, pengaturan, antrean auto-reply. Tidak ada transport di sini. |
+| `backend/config/whatsapp-baileys.js` | Adapter lama (dulu `whatsapp.js`), kini turunan dari base. Perilakunya tidak berubah. |
+| `backend/config/whatsapp-cloud.js` | Adapter Meta Cloud API: logika jendela 24 jam, kirim template vs teks bebas, klasifikasi error Meta, status nomor + quality rating. |
+| `backend/config/wa-templates.js` | Pemetaan kategori internal ke nama template Meta, plus pembersih parameter. |
 
-Cara paling aman: `class WhatsAppCloudService extends require('./whatsapp-baileys').constructor`
-sulit karena Baileys mengekspor instance. Lebih baik **pindahkan method-method
-database murni ke `backend/config/wa-log-store.js`** dan pakai di kedua adapter,
-supaya tidak ada duplikasi. Kalau itu terlalu invasif, salin dan beri komentar
-`// DUPLIKAT dari whatsapp-baileys.js — ubah keduanya kalau berubah`.
+## File yang diubah
 
-### Pemanggilan HTTP ke Meta
-
-```
-POST https://graph.facebook.com/${META_API_VERSION}/${META_PHONE_NUMBER_ID}/messages
-Headers: Authorization: Bearer ${META_ACCESS_TOKEN}
-         Content-Type: application/json
-```
-
-Pesan bebas (di dalam jendela 24 jam — **gratis**):
-
-```json
-{ "messaging_product": "whatsapp", "to": "628xxxxxxxxxx",
-  "type": "text", "text": { "body": "isi pesan" } }
-```
-
-Pesan template (di luar jendela — **berbayar**):
-
-```json
-{ "messaging_product": "whatsapp", "to": "628xxxxxxxxxx", "type": "template",
-  "template": { "name": "konfirmasi_data_masuk", "language": { "code": "id" },
-    "components": [ { "type": "body",
-      "parameters": [ { "type": "text", "text": "Budi" } ] } ] } }
-```
-
-Sukses → `{ "messages": [ { "id": "wamid.XXX" } ] }`. Simpan `id` itu ke
-`whatsapp_logs.wa_message_id`. Gagal → `{ "error": { "message", "code", "error_subcode", "fbtrace_id" } }`.
-
-### Klasifikasi error (ganti `_isRetryable`)
-
-| Kondisi | retryable |
+| File | Perubahan |
 |---|---|
-| HTTP 5xx, timeout, ECONNRESET | ya |
-| `code: 130429` (rate limit), `131056` (pair rate limit) | ya |
-| `code: 131047` (di luar jendela, butuh template) | **tidak** — perbaiki logikanya, bukan diulang |
-| `code: 131026` (tidak bisa dikirim / bukan nomor WA) | tidak |
-| `code: 132xxx` (template tidak ada / parameter tidak cocok / belum approve) | tidak |
-| `code: 190` (token kedaluwarsa) | tidak — log `ERROR` mencolok, ini butuh tindakan manusia |
+| `backend/config/wa-worker.js` | `_bridgeCall` diganti `sendForExistingLog`; klasifikasi transient sekarang memakai flag `retryable` dari provider, bukan regex; pacing jadi sadar provider; `variasiPesan` dan warm-up nomor dimatikan di mode cloud. |
+| `backend/controllers/webhookController.js` | Ditambah `verifyMetaWebhook` dan `handleMetaWebhook` beserta pemroses payload dan pemetaan status. Chat masuk tetap lewat `handleIncomingMessage` yang sama. |
+| `backend/routes/api.js` | Route `GET/POST /api/webhook/meta`. |
+| `backend/server.js` | Raw body ditangkap untuk verifikasi tanda tangan; validasi env saat boot untuk mode cloud. |
+| `admin/admin.js`, `admin/dashboard.html` | Panel WA menampilkan nomor + quality rating saat mode cloud; blok QR dan tombol Disconnect/Restart disembunyikan. |
+| `.env.example` | Seluruh variabel `WA_PROVIDER` dan `META_*`. |
 
-Simpan `code` Meta ke `whatsapp_logs.error_code` dan seluruh objek error ke
-`api_response`.
+## Keputusan penting
 
-### Logika jendela 24 jam
+**Jendela 24 jam menentukan biaya.** `whatsapp-cloud.js` mengecek
+`customers.last_incoming_message_at`. Terbuka: kirim teks bebas. Tertutup:
+kirim template. Kalau pengecekan itu sendiri gagal, sistem menganggap
+**tertutup** dan mengirim template — salah menebak "terbuka" berarti Meta
+menolak dengan 131047 dan pesannya hilang, sedangkan salah menebak "tertutup"
+hanya berarti terkirim sebagai template berbayar. Dipilih yang sampai.
 
-Ini yang menentukan biaya, jadi harus tepat.
+**Kategori tanpa template = gagal permanen.** Kalau jendela tertutup dan
+kategori tidak punya template terdaftar, pesan ditandai `FAILED` dengan
+`error_code = 'NO_TEMPLATE'` dan tidak diulang. Sistem tidak akan diam-diam
+mencoba mengirim teks bebas di luar jendela.
 
-```
-window_open = customers.last_incoming_message_at IS NOT NULL
-              AND last_incoming_message_at > NOW() - INTERVAL '24 hours'
-```
+**Error Meta yang tidak layak diulang.** `131047` (di luar jendela), `131026`
+(tidak terkirim), `132xxx` (template salah), `190` (token mati) semuanya
+permanen. Yang diulang hanya `130429`, `131056`, `133016`, dan HTTP 5xx.
+Token mati (`190`) dicetak sebagai `console.error` mencolok karena itu butuh
+tindakan manusia, bukan retry.
 
-- `window_open == true` → kirim **pesan teks bebas**. Gratis. Isi pesan dipakai apa adanya.
-- `window_open == false` → kirim **template** sesuai `category`, dengan pemetaan
-  di Task 4. Berbayar.
+**Webhook membalas 200 lebih dulu, memproses belakangan.** Meta mengirim ulang
+lalu menonaktifkan webhook yang lambat merespons.
 
-Kalau `category` tidak punya template terdaftar dan jendela tertutup, **jangan
-kirim**. Tandai log `FAILED` dengan `error_code = 'NO_TEMPLATE'` dan
-`retryable = false`. Jangan pernah diam-diam mengirim teks bebas di luar jendela —
-Meta akan menolak dengan 131047 dan itu memboroskan percobaan.
+**Pacing di mode cloud.** Delay turun ke 2-5 detik, break dan warm-up mati.
+Yang sengaja dipertahankan: jam kerja 08:00-22:00 WITA (sopan santun ke
+customer, bukan anti-ban) dan daily limit — yang di mode cloud berubah fungsi
+jadi rem biaya.
 
-### Yang harus dimatikan saat provider = cloud
+## Verifikasi yang sudah dijalankan
 
-- `variasiPesan()` dan `spinText()` **tidak boleh** dipakai untuk pesan template.
-  Isi template sudah tetap; menambah karakter acak membuatnya tidak cocok dengan
-  template terdaftar dan ditolak Meta. Untuk pesan bebas di dalam jendela,
-  variasi juga tidak perlu — tidak ada risiko fingerprint di API resmi.
+- `node --check` bersih di 10 file yang disentuh.
+- Kedua provider dimuat dan permukaan API-nya identik (26 method wajib, nol
+  yang hilang di kedua sisi).
+- Pembersih parameter template: newline dan spasi ganda jadi spasi tunggal.
+- Kategori tak terdaftar mengembalikan `null` (memicu jalur `NO_TEMPLATE`).
+- Klasifikasi error: `130429` retry, `131047` tidak, HTTP 500 retry.
+- Boot mode cloud tanpa env lengkap menolak start dan menyebut variabel yang kurang.
+- Webhook: token benar mengembalikan challenge apa adanya (200), token salah
+  403, tanda tangan valid 200, tanda tangan salah 401, tanpa tanda tangan 401.
 
----
-
-## Task 4 — Daftar template
-
-Buat `backend/config/wa-templates.js`:
-
-```js
-// Pemetaan kategori internal → template terdaftar di Meta.
-// Nama dan jumlah parameter HARUS sama persis dengan yang disetujui Meta,
-// kalau tidak Meta menolak dengan error 132000/132001.
-module.exports = {
-    auto_reply: {
-        name: 'konfirmasi_data_masuk',
-        language: 'id',
-        category: 'UTILITY',
-        params: c => [c.nama_lengkap || 'Kak']
-    },
-    birthday: {
-        name: 'ucapan_ulang_tahun',
-        language: 'id',
-        category: 'MARKETING',
-        params: c => [c.nama_lengkap || 'Kak']
-    },
-    broadcast: {
-        name: 'promo_umum',
-        language: 'id',
-        category: 'MARKETING',
-        params: c => [c.nama_lengkap || 'Kak', c.isi_promo || '']
-    }
-};
-```
-
-Isi template yang harus didaftarkan manusia ada di Bagian B langkah 6.
-
----
-
-## Task 5 — Webhook Meta
-
-Cloud API memakai bentuk webhook yang berbeda dari wa-bridge, jadi ini
-**endpoint baru**, bukan mengubah `/api/webhook/whatsapp` yang sudah ada.
-
-1. **Tangkap raw body untuk verifikasi tanda tangan.** Di `backend/server.js:95`,
-   ubah `app.use(express.json({ limit: '50kb' }))` menjadi:
-
-```js
-app.use(express.json({
-    limit: '50kb',
-    verify: (req, _res, buf) => { req.rawBody = buf; }
-}));
-```
-
-2. Tambahkan dua route di `backend/routes/api.js`, di dekat route webhook yang ada:
-
-```js
-router.get('/webhook/meta', webhookController.verifyMetaWebhook);
-router.post('/webhook/meta', webhookLimiter, webhookController.handleMetaWebhook);
-```
-
-3. Di `backend/controllers/webhookController.js`:
-
-**`verifyMetaWebhook`** — dipanggil Meta sekali saat mendaftarkan webhook:
-
-```
-GET /api/webhook/meta?hub.mode=subscribe&hub.verify_token=XXX&hub.challenge=123
-```
-Kalau `hub.verify_token === process.env.META_VERIFY_TOKEN`, balas **200 dengan
-`hub.challenge` sebagai teks polos** (bukan JSON). Kalau tidak, balas 403.
-
-**`handleMetaWebhook`** —
-- Verifikasi header `X-Hub-Signature-256`. Nilainya `sha256=<hex>` di mana hex =
-  HMAC-SHA256 dari `req.rawBody` memakai `META_APP_SECRET`. Bandingkan dengan
-  `safeEqual` dari `csrfMiddleware.js`. Tidak cocok → 401, jangan diproses.
-- **Balas 200 secepatnya**, proses isinya setelah itu. Meta akan mengirim ulang
-  dan akhirnya menonaktifkan webhook kalau respons lambat.
-- Bentuk payload: `body.entry[].changes[].value` berisi:
-  - `.messages[]` — chat masuk. Petakan ke pemanggilan
-    `exports.handleIncomingMessage({ sender: m.from, message: m.text?.body,
-    pushname: value.contacts?.[0]?.profile?.name, wa_message_id: m.id })`.
-    **Pakai ulang fungsi yang sudah ada** — semua logika customer, opt-out,
-    Google Contacts, dan ignore-list sudah benar di sana dan tidak boleh
-    diduplikasi. Hanya tangani `m.type === 'text'`; tipe lain diabaikan.
-  - `.statuses[]` — status kiriman. Petakan lalu panggil
-    `whatsappService.updateMessageStatus(s.id, ack)` dengan:
-    `sent → 2`, `delivered → 3`, `read → 4`, `failed → 0`.
-    Ini memakai skala ack Baileys yang sudah dipahami `updateMessageStatus`,
-    jadi dashboard tidak perlu diubah.
-    Untuk `failed`, simpan juga `s.errors[0].code` ke `whatsapp_logs.error_code`.
-
-**Syarat penerimaan:** POST tanpa signature yang benar ditolak 401. GET dengan
-verify token benar mengembalikan challenge apa adanya.
-
----
-
-## Task 6 — `getStatus()` dan panel admin
-
-Panel WhatsApp di admin sekarang menampilkan QR dan tombol connect/disconnect.
-Dengan Cloud API tidak ada QR — nomor selalu tersambung.
-
-`getStatus()` di adapter Cloud API harus mengembalikan bentuk yang **sama**
-seperti versi Baileys (supaya `admin/admin.js` tidak rusak), diisi dari:
-
-```
-GET https://graph.facebook.com/${META_API_VERSION}/${META_PHONE_NUMBER_ID}
-    ?fields=display_phone_number,verified_name,quality_rating
-Headers: Authorization: Bearer ${META_ACCESS_TOKEN}
-```
-
-Pemetaan: `status: 'connected'`, `info.phone` = `display_phone_number` tanpa
-non-digit, dan tambahkan field baru `quality_rating` serta `provider: 'cloud'`.
-Cache hasilnya minimal 5 menit — jangan panggil Graph API tiap polling dashboard.
-
-Di `admin/admin.js`, saat `status.provider === 'cloud'`:
-- Sembunyikan blok QR, tombol "Scan Ulang", dan "Disconnect".
-- Tampilkan: nomor, nama terverifikasi, dan quality rating dengan warna
-  (GREEN/YELLOW/RED). Quality rating turun = peringatan dini sebelum Meta
-  menurunkan limit; ini pengganti fungsi panel QR.
-
----
-
-## Task 7 — Sesuaikan pacing worker
-
-Delay 4:30–6:00 per pesan, break, warm-up, dan jam kerja di `wa-worker.js` ada
-untuk menghindari deteksi Baileys. Di API resmi semuanya tidak relevan dan hanya
-memperlambat.
-
-Di `CONFIG` `wa-worker.js`, buat nilainya bergantung provider. Saat
-`WA_PROVIDER=cloud`:
-
-- Delay antar pesan semua kategori: **2–5 detik**.
-- Break berkala: **dimatikan**.
-- Warm-up harian dan `_getWarmupCap()`: **dimatikan**.
-- Jam kerja 08:00–22:00 WITA: **tetap dipertahankan** — ini soal sopan santun ke
-  customer, bukan anti-ban. Jangan kirim ucapan ulang tahun jam 3 pagi.
-- Daily limit: tetap dipakai sebagai **rem biaya**, bukan rem ban. Beri label
-  ulang di UI admin jadi "Batas pesan harian (kontrol biaya)".
-- Retry: pertahankan gerbang yang ada (limit harian, jendela settle, opt-out),
-  tapi jeda boleh turun ke 30–60 detik.
-
-Semua ini harus **tidak berlaku** saat provider = baileys. Nilai lama tetap utuh.
-
----
-
-## Task 8 — Environment variable
-
-Tambahkan ke `.env.example` (buat kalau belum ada) dan dokumentasikan:
-
-```bash
-# baileys (default) | cloud
-WA_PROVIDER=baileys
-
-# Diisi hanya kalau WA_PROVIDER=cloud
-META_API_VERSION=v21.0
-META_PHONE_NUMBER_ID=
-META_WABA_ID=
-META_ACCESS_TOKEN=
-META_APP_SECRET=
-META_VERIFY_TOKEN=
-```
-
-`META_VERIFY_TOKEN` adalah string bebas yang dibuat sendiri — dipakai sekali saat
-mendaftarkan webhook, harus sama di kedua sisi.
-
-Saat boot, kalau `WA_PROVIDER=cloud` tapi ada variabel yang kosong, **server harus
-menolak start** dengan pesan jelas menyebut variabel mana yang kurang. Jangan
-diam-diam jatuh ke Baileys — itu bikin bingung saat produksi.
-
----
-
-## Verifikasi akhir Bagian A
-
-```bash
-node --check backend/config/whatsapp.js
-node --check backend/config/whatsapp-cloud.js
-node --check backend/config/whatsapp-baileys.js
-node --check backend/config/wa-worker.js
-node --check backend/controllers/webhookController.js
-grep -rn "_bridgeCall" backend/          # tidak boleh ada di luar whatsapp-baileys.js
-```
-
-Lalu jalankan server tanpa `WA_PROVIDER` dan pastikan semua fitur lama normal.
+Yang **belum** bisa diuji tanpa akun Meta: pengiriman sungguhan, bentuk payload
+webhook asli, dan quality rating. Itu bagian dari uji go-live di Bagian C.
 
 ---
 

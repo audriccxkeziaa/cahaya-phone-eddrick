@@ -560,7 +560,9 @@
             <div class="card">
                 <div class="card-header"><h3 style="color:#DC2626;">Danger Zone</h3></div>
                 <div class="card-body">
-                    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    <!-- Disembunyikan otomatis saat WA_PROVIDER=cloud — Cloud API
+                         tidak punya sesi untuk diputus dan tidak ada QR untuk di-scan. -->
+                    <div id="waSessionActions" style="display:flex;gap:10px;flex-wrap:wrap;">
                         <button class="btn-small" style="background:rgba(220,38,38,0.08);color:#DC2626;border:1px solid rgba(220,38,38,0.2);padding:10px 20px;" onclick="disconnectWA()">Disconnect WA</button>
                         <button class="btn-small" style="padding:10px 20px;" onclick="restartWA()">Restart / Scan Ulang QR</button>
                     </div>
