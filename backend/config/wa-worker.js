@@ -116,10 +116,16 @@ const CONFIG = {
         breakDurationMs:  { min: 8 * 60_000, max: 18 * 60_000 }
     },
 
-    // Retry delays
+    // Retry pacing — a retry is a REAL send to a real person, so it must obey the
+    // same cadence as every other queue. This path used to run 3 messages per 15s
+    // tick with a 2-5s gap, bypassing the daily limit, the breaks and the reconnect
+    // settle window. After any bridge outage the whole FAILED backlog came due at
+    // once and drained at ~3 msg/menit for hours — the burst pattern that gets a
+    // number banned. One message per window now, same tempo as broadcast.
     retry: {
-        batchSize: 3,
-        interMessageDelay: { min: 2_000, max: 5_000 }
+        batchSize: 1,
+        baseDelayMs: { min: 270_000, max: 360_000 },   // 4:30 to 6:00
+        jitterMs: 30_000
     },
 
     // Startup safety break — after restart, wait before sending
@@ -160,6 +166,9 @@ class WAWorker {
         // Bridge reconnect settling — see CONFIG.bridgeReconnectSettleMs
         this.bridgeSettleUntil = 0;       // epoch ms — don't send before this after reconnect
         this._bridgeWasConnected = false; // tracks connected→disconnected→connected transitions
+
+        // Retry queue state — retries are paced like every other queue (see _retryFailed)
+        this.nextRetryAllowedAt = 0;      // epoch ms
 
         // Birthday queue state (separate pacing — never blocks broadcast or auto-reply)
         this.birthdayMsgsSinceBreak = 0;
@@ -237,6 +246,7 @@ class WAWorker {
         this.nextBroadcastAllowedAt = this.startedAt + CONFIG.startupCooldownMs;
         this.nextAutoReplyAllowedAt = this.startedAt + CONFIG.startupCooldownMs;
         this.nextBirthdayAllowedAt  = this.startedAt + CONFIG.startupCooldownMs;
+        this.nextRetryAllowedAt     = this.startedAt + CONFIG.startupCooldownMs;
 
         console.log(`[WA Worker] Started. Cooldown ${CONFIG.startupCooldownMs / 1000}s before first send (all queues).`);
 
@@ -423,6 +433,28 @@ class WAWorker {
             client.release();
         }
 
+        // Opt-out check. Jalur ini memanggil bridge langsung, jadi tidak lewat
+        // sendText yang biasanya menyaring opt-out. Tanpa cek ini, auto-reply yang
+        // sudah antre sebelum customer mengetik STOP tetap terkirim — dan laporan
+        // dari penerima adalah sinyal ban terkuat di WhatsApp.
+        try {
+            const { rows: oo } = await db.query(
+                `SELECT 1 FROM customers WHERE whatsapp = $1 AND opted_in = FALSE LIMIT 1`,
+                [row.phone]
+            );
+            if (oo.length > 0) {
+                await db.query(
+                    `UPDATE whatsapp_logs SET status = 'CANCELLED', next_retry_at = NULL,
+                        error_code = 'OPTED_OUT', updated_at = NOW() WHERE id = $1`,
+                    [row.id]
+                );
+                console.log(`[WA Worker] Auto-reply #${row.id} dibatalkan — ${row.phone} sudah opt-out`);
+                return;
+            }
+        } catch (err) {
+            console.warn('[WA Worker] Auto-reply opt-out check failed:', err.message);
+        }
+
         // Send via bridge directly (this log row already exists — don't double-log via sendText)
         try {
             // Anti-fingerprint: vary every message at send-time (random closing +
@@ -507,15 +539,31 @@ class WAWorker {
 
     // ============================================
     // RETRY FAILED (whatsapp_logs with next_retry_at due)
+    //
+    // A retry is a real message to a real person, so it passes through the SAME
+    // gates as the broadcast and auto-reply queues: working hours, reconnect settle
+    // window, break, daily limit, and 4:30-6:00 spacing. It also honours opt-out —
+    // someone who replied STOP after the original attempt must not get the retry.
     // ============================================
     async _retryFailed() {
+        const now = Date.now();
+
         if (!this._isWorkingHours()) return;
+        if (now < this.nextRetryAllowedAt) return;   // still cooling down
+        if (now < this.bridgeSettleUntil) return;    // session still syncing after reconnect
+        if (now < this.breakUntil) return;           // share the broadcast break
+
+        // Daily limit counts retries too — they are sends like any other.
+        const sentToday = await this._getSentToday();
+        const dailyLimit = Math.min(await this._getDailyLimit(), await this._getWarmupCap());
+        if (sentToday >= dailyLimit) return;
 
         const client = await db.connect();
+        let rows = [];
         try {
             await client.query('BEGIN');
 
-            const { rows } = await client.query(
+            ({ rows } = await client.query(
                 `SELECT id, phone, type, message_body, retry_count
                  FROM whatsapp_logs
                  WHERE status = 'FAILED'
@@ -527,55 +575,72 @@ class WAWorker {
                  LIMIT $1
                  FOR UPDATE SKIP LOCKED`,
                 [CONFIG.retry.batchSize]
-            );
+            ));
 
             if (rows.length === 0) {
                 await client.query('COMMIT');
                 return;
             }
 
-            const ids = rows.map(r => r.id);
             await client.query(
                 `UPDATE whatsapp_logs SET status = 'RETRYING', updated_at = NOW() WHERE id = ANY($1)`,
-                [ids]
+                [rows.map(r => r.id)]
             );
             await client.query('COMMIT');
-
-            console.log(`[WA Worker] Retrying ${rows.length} failed message(s)...`);
-
-            for (const msg of rows) {
-                try {
-                    // sendText creates a NEW log entry — close out the old one as permanently_failed
-                    // to avoid infinite retry loops (the new log tracks this retry attempt)
-                    const result = await whatsappService.sendText(msg.phone, msg.message_body, {
-                        typing: false,
-                        skipOptCheck: true,
-                        category: msg.type || 'text'
-                    });
-
-                    // Close the old log: mark as retried
-                    await db.query(
-                        `UPDATE whatsapp_logs SET
-                            status = $1, retry_count = retry_count + 1, updated_at = NOW()
-                         WHERE id = $2`,
-                        [result.success ? 'SENT' : 'FAILED', msg.id]
-                    );
-
-                    await this._randomDelay(CONFIG.retry.interMessageDelay.min, CONFIG.retry.interMessageDelay.max);
-                } catch (err) {
-                    console.error(`[WA Worker] Retry error for #${msg.id}:`, err.message);
-                    await db.query(
-                        `UPDATE whatsapp_logs SET status = 'FAILED', updated_at = NOW() WHERE id = $1`,
-                        [msg.id]
-                    ).catch(() => {});
-                }
-            }
         } catch (err) {
             await client.query('ROLLBACK').catch(() => {});
-            console.error('[WA Worker] retryFailed error:', err.message);
+            console.error('[WA Worker] retryFailed claim error:', err.message);
+            return;
         } finally {
             client.release();
         }
+
+        for (const msg of rows) {
+            try {
+                // skipOptCheck deliberately NOT set — sendText re-checks opt-out and
+                // refuses if the customer opted out after the original attempt.
+                const result = await whatsappService.sendText(msg.phone, msg.message_body, {
+                    typing: false,
+                    category: msg.type || 'text'
+                });
+
+                // Opted out → permanent, not transient. Stop retrying this row, and
+                // don't burn the send window since no message actually went out.
+                if (!result.success && result.opted_out) {
+                    await db.query(
+                        `UPDATE whatsapp_logs SET status = 'CANCELLED', next_retry_at = NULL,
+                            error_code = 'OPTED_OUT', updated_at = NOW()
+                         WHERE id = $1`,
+                        [msg.id]
+                    ).catch(() => {});
+                    console.log(`[WA Worker] Retry #${msg.id} dibatalkan — ${msg.phone} sudah opt-out`);
+                    continue;
+                }
+
+                await db.query(
+                    `UPDATE whatsapp_logs SET
+                        status = $1, retry_count = retry_count + 1, updated_at = NOW()
+                     WHERE id = $2`,
+                    [result.success ? 'SENT' : 'FAILED', msg.id]
+                );
+                console.log(`[WA Worker] Retry #${msg.id} (${msg.type}) → ${result.success ? 'SENT' : 'FAILED'}`);
+
+                this._scheduleNextRetry();
+            } catch (err) {
+                console.error(`[WA Worker] Retry error for #${msg.id}:`, err.message);
+                await db.query(
+                    `UPDATE whatsapp_logs SET status = 'FAILED', updated_at = NOW() WHERE id = $1`,
+                    [msg.id]
+                ).catch(() => {});
+                this._scheduleNextRetry();
+            }
+        }
+    }
+
+    _scheduleNextRetry() {
+        const base = this._randInt(CONFIG.retry.baseDelayMs.min, CONFIG.retry.baseDelayMs.max);
+        const jitter = this._randInt(-CONFIG.retry.jitterMs, CONFIG.retry.jitterMs);
+        this.nextRetryAllowedAt = Date.now() + Math.max(60_000, base + jitter);
     }
 
     // ============================================

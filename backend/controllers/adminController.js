@@ -1737,7 +1737,23 @@ exports.stopBroadcast = async (req, res) => {
             `UPDATE broadcast_recipients SET status = 'skipped'
              WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status = 'stopped') AND status IN ('pending', 'sending')`
         );
-        res.json({ success: true, message: 'Broadcast dihentikan', status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
+
+        // STOP harus benar-benar berhenti. Menandai recipient 'skipped' saja tidak cukup:
+        // percobaan kirim yang gagal meninggalkan baris di whatsapp_logs bertipe
+        // 'broadcast' yang masih dijadwalkan retry oleh wa-worker. Tanpa ini, admin
+        // menekan STOP tapi nomor tetap mengirim lewat jalur retry.
+        const { rowCount: cancelled } = await db.query(
+            `UPDATE whatsapp_logs
+                SET status = 'CANCELLED', next_retry_at = NULL,
+                    error_code = 'BROADCAST_STOPPED', updated_at = NOW()
+              WHERE type = 'broadcast'
+                AND status IN ('FAILED', 'RETRYING', 'QUEUED', 'PENDING')`
+        );
+        if (cancelled > 0) {
+            console.log(`[BROADCAST] STOP — ${cancelled} pesan broadcast tertunda dibatalkan`);
+        }
+
+        res.json({ success: true, message: `Broadcast dihentikan${cancelled > 0 ? ` (${cancelled} pesan tertunda dibatalkan)` : ''}`, status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
     } catch (error) {
         console.error('❌ Stop broadcast error:', error);
         res.status(500).json({ success: false, message: 'Gagal menghentikan broadcast' });

@@ -654,17 +654,32 @@ async function startSocket() {
                     let phoneJid;
 
                     if (remoteJid.endsWith('@lid')) {
-                        // Baileys v7: remoteJidAlt berisi JID nomor asli.
-                        // Fallback terakhir: LID mapping store milik Baileys.
-                        let realPhone = msg.key.remoteJidAlt || msg.key.senderPn || null;
-                        if (!realPhone || !String(realPhone).endsWith('@s.whatsapp.net')) {
+                        // WhatsApp memigrasi identitas pengirim ke LID, jadi makin banyak
+                        // chat masuk datang sebagai @lid tanpa nomor telepon di remoteJid.
+                        // Kalau nomor aslinya tidak ke-resolve, pesan hilang total — customer
+                        // tidak pernah tersimpan. Jadi coba semua sumber yang ada, lalu ulangi
+                        // beberapa kali: mapping store Baileys sering baru terisi sesaat setelah
+                        // pesan pertama masuk.
+                        const isPn = v => v && String(v).endsWith('@s.whatsapp.net');
+                        let realPhone = [
+                            msg.key.remoteJidAlt,
+                            msg.key.senderPn,
+                            msg.key.participantAlt,
+                            msg.key.participant
+                        ].find(isPn) || null;
+
+                        for (let attempt = 0; !isPn(realPhone) && attempt < 3; attempt++) {
                             try {
                                 const mapped = await sock?.signalRepository?.lidMapping?.getPNForLID?.(remoteJid);
-                                if (mapped && String(mapped).endsWith('@s.whatsapp.net')) realPhone = mapped;
+                                if (isPn(mapped)) { realPhone = mapped; break; }
                             } catch (_) { /* mapping belum tersedia */ }
+                            await new Promise(r => setTimeout(r, 1000));
                         }
-                        if (!realPhone || !String(realPhone).endsWith('@s.whatsapp.net')) {
-                            console.warn(`[MSG IN] LID-only sender ${pushname} (${remoteJid}) — nomor asli tak bisa di-resolve, skipped`);
+
+                        if (!isPn(realPhone)) {
+                            // Marker khusus supaya gampang dicari di log Railway. Kalau baris ini
+                            // sering muncul, ITU penyebab "nomor tidak tersimpan", bukan backend.
+                            console.warn(`[MSG IN][LID-UNRESOLVED] ${pushname} (${remoteJid}) — nomor asli tak bisa di-resolve, pesan dilewati`);
                             continue;
                         }
                         phoneJid = String(realPhone);

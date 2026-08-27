@@ -53,17 +53,45 @@ exports.handleIncomingMessage = async (data) => {
 
         console.log(`[WEBHOOK] Processing: ${senderName} (${cleanPhone}): ${message.substring(0, 50)}...`);
 
-        // If this phone already exists in Google Contacts with a real name,
-        // ignore it completely. This prevents staff/shop numbers from becoming
-        // system-managed chat-only customers.
+        // Nomor internal (staf, nomor toko lain) yang memang tidak boleh jadi customer.
+        // Diisi lewat app_settings key 'wa_ignore_numbers', dipisah koma.
+        // Ini menggantikan cara lama yang membuang SEMUA nomor yang kebetulan sudah
+        // ada di Google Contacts — lihat catatan di bawah.
+        try {
+            const { rows: ign } = await db.query(
+                `SELECT value FROM app_settings WHERE key = 'wa_ignore_numbers' LIMIT 1`
+            );
+            const ignoreList = (ign[0]?.value || '')
+                .split(',')
+                .map(v => sanitizePhone(v.trim().replace(/\D/g, '')))
+                .filter(Boolean);
+            if (ignoreList.includes(cleanPhone)) {
+                console.log(`[WEBHOOK] Ignored incoming chat from ${cleanPhone} — ada di wa_ignore_numbers`);
+                return { success: true, ignored: true, reason: 'ignore_list' };
+            }
+        } catch (err) {
+            console.warn('[WEBHOOK] Ignore-list lookup failed:', err.message);
+        }
+
+        // Nama dari Google Contacts, kalau ada. INI TIDAK LAGI MEMBATALKAN PENYIMPANAN.
+        //
+        // Versi lama: begitu nomor ketemu di Google Contacts dengan nama asli, seluruh
+        // chat masuk di-return lebih awal — customer tidak tersimpan ke DB, pesannya
+        // tidak tercatat, dan last_incoming_message_at customer lama tidak ter-update.
+        // Karena nomor pembeli yang pernah chat umumnya sudah tersimpan di kontak HP
+        // pemilik toko, efeknya: pembeli yang cuma chat berhenti tersimpan sama sekali.
+        //
+        // Sekarang nama Google hanya dipakai untuk dua hal: memberi nama record baru
+        // dengan nama asli (lebih berguna daripada "Customer - tanggal"), dan mencegah
+        // kita menimpa kontak Google yang sudah dinamai manusia.
+        let knownGoogleName = '';
         try {
             const googleContact = await googleService.findContactByPhoneNumber(cleanPhone);
             const googleName = Array.isArray(googleContact?.names) && googleContact.names[0]
                 ? googleContact.names[0].displayName || googleContact.names[0].givenName || ''
                 : '';
             if (googleName && !googleService.isPlaceholderName(googleName)) {
-                console.log(`[WEBHOOK] Ignored incoming chat from ${cleanPhone}; existing Google contact: ${googleName}`);
-                return { success: true, ignored: true, reason: 'existing_real_google_contact' };
+                knownGoogleName = googleName;
             }
         } catch (err) {
             console.warn('[WEBHOOK] Google contact lookup failed:', err.message);
@@ -138,14 +166,16 @@ exports.handleIncomingMessage = async (data) => {
                 source = 'TikTok';
             }
 
-            // Format nama SELALU: "Customer - DD/MM/YYYY"
-            // Tidak pakai pushname — pushname bisa asal-asalan / beda orang sama nomor
+            // Nama default: "Customer - DD/MM/YYYY".
+            // Tidak pakai pushname — pushname bisa asal-asalan / beda orang sama nomor.
+            // Tapi kalau nomor ini sudah punya nama asli di Google Contacts, pakai itu:
+            // nama yang diketik manusia lebih berguna daripada placeholder tanggal.
             const now = new Date();
             const tanggal = now.toLocaleDateString('id-ID', {
                 day: '2-digit', month: '2-digit', year: 'numeric',
                 timeZone: 'Asia/Makassar'
             });
-            const customerName = `Customer - ${tanggal}`;
+            const customerName = knownGoogleName || `Customer - ${tanggal}`;
 
             const { rows: inserted } = await db.query(
                 `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe, last_incoming_message_at)
@@ -160,16 +190,21 @@ exports.handleIncomingMessage = async (data) => {
 
             console.log(`[WEBHOOK] New customer (Chat Only): ${customerId} — ${customerName} — NO auto-reply`);
 
-            // Auto-save ke Google Contacts (format: "Customer - DD/MM/YYYY")
-            try {
-                await googleService.saveContact({
-                    nama_lengkap: customerName,
-                    whatsapp: cleanPhone,
-                    source,
-                    tipe: 'Chat Only'
-                });
-            } catch (gcErr) {
-                console.warn('[WEBHOOK] Google Contact save failed:', gcErr.message);
+            // Auto-save ke Google Contacts (format: "Customer - DD/MM/YYYY").
+            // Dilewati kalau kontaknya sudah dinamai manusia — jangan timpa nama asli.
+            if (knownGoogleName) {
+                console.log(`[WEBHOOK] Google Contact dilewati untuk ${cleanPhone} — sudah ada nama: ${knownGoogleName}`);
+            } else {
+                try {
+                    await googleService.saveContact({
+                        nama_lengkap: customerName,
+                        whatsapp: cleanPhone,
+                        source,
+                        tipe: 'Chat Only'
+                    });
+                } catch (gcErr) {
+                    console.warn('[WEBHOOK] Google Contact save failed:', gcErr.message);
+                }
             }
 
             // BERHENTI DI SINI. TIDAK kirim auto-reply.
