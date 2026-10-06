@@ -295,6 +295,51 @@ const FORWARD_QUEUE_MAX_SIZE    = 1000;
 let pendingForwards   = [];
 let forwardRetryTimer = null;
 let forwardSaveTimer  = null;
+let retryInFlight     = false;
+
+// Exponential backoff state for the webhook (shared by forwards + purchase checks)
+const WEBHOOK_BACKOFF_BASE_MS = 5_000;
+const WEBHOOK_BACKOFF_MAX_MS  = 5 * 60_000;
+let webhookConsecutiveFailures = 0;
+let webhookBackoffUntil        = 0;
+
+/** Webhook URL truncated to 50 chars for debug logs (query string stripped). */
+function maskedWebhookUrl() {
+    if (!WEBHOOK_URL) return '(WEBHOOK_URL not set)';
+    const base = WEBHOOK_URL.split('?')[0];
+    return base.length > 50 ? `${base.substring(0, 50)}...` : base;
+}
+
+/** fetch() throws a generic "fetch failed"; the real reason is in err.cause. */
+function describeFetchError(err) {
+    if (!err) return 'unknown error';
+    const cause = err.cause;
+    if (cause && (cause.code || cause.message)) {
+        return `${err.message}: ${[cause.code, cause.message].filter(Boolean).join(' ')}`;
+    }
+    return err.message || String(err);
+}
+
+function isWebhookInBackoff() {
+    return Date.now() < webhookBackoffUntil;
+}
+
+function recordWebhookFailure() {
+    webhookConsecutiveFailures++;
+    const delay = Math.min(
+        WEBHOOK_BACKOFF_BASE_MS * 2 ** (webhookConsecutiveFailures - 1),
+        WEBHOOK_BACKOFF_MAX_MS
+    );
+    webhookBackoffUntil = Date.now() + delay;
+}
+
+function recordWebhookSuccess() {
+    if (webhookConsecutiveFailures > 0) {
+        console.log(`[WEBHOOK] Recovered after ${webhookConsecutiveFailures} failure(s)`);
+    }
+    webhookConsecutiveFailures = 0;
+    webhookBackoffUntil        = 0;
+}
 
 function loadPendingForwards() {
     try {
@@ -349,25 +394,43 @@ async function attemptForward(payload) {
 
 async function retryPendingForwards() {
     if (pendingForwards.length === 0) { stopRetryTimer(); return; }
+    if (retryInFlight) return;
+    // Respect exponential backoff while the webhook is failing
+    if (isWebhookInBackoff()) return;
+    retryInFlight = true;
+
+    try {
     const batch       = pendingForwards.splice(0, FORWARD_RETRY_BATCH);
     const failedAgain = [];
     let successCount  = 0;
 
-    for (const entry of batch) {
+    for (let i = 0; i < batch.length; i++) {
+        const entry = batch[i];
         entry.attempts = (entry.attempts || 0) + 1;
         try {
             await attemptForward(entry.payload);
+            recordWebhookSuccess();
             successCount++;
         } catch (err) {
+            recordWebhookFailure();
+            console.warn(`[WEBHOOK] Retry failed (${describeFetchError(err)}) url=${maskedWebhookUrl()}, consecutive failures: ${webhookConsecutiveFailures}`);
             if (entry.attempts < FORWARD_MAX_ATTEMPTS) failedAgain.push(entry);
             else console.error(`[FORWARD] Dropping message from ${entry.payload.sender} after ${entry.attempts} attempts`);
+            // Webhook is down — stop the batch and put the rest back untouched
+            // (without counting an attempt) instead of hammering it.
+            for (let j = i + 1; j < batch.length; j++) failedAgain.push(batch[j]);
+            break;
         }
     }
-    pendingForwards.push(...failedAgain);
+    // Keep original order: failed entries go back to the front of the queue
+    pendingForwards.unshift(...failedAgain);
     savePendingForwards();
     if (successCount > 0)
         console.log(`[FORWARD] Retry: ${successCount} delivered, ${failedAgain.length} still pending (queue: ${pendingForwards.length})`);
     if (pendingForwards.length === 0) stopRetryTimer();
+    } finally {
+        retryInFlight = false;
+    }
 }
 
 async function wipeSession() {
@@ -388,19 +451,32 @@ async function wipeSession() {
     try { await fsp.mkdir(SESSION_DIR, { recursive: true }); } catch (_) {}
 }
 
+function queueForward(payload) {
+    if (pendingForwards.length >= FORWARD_QUEUE_MAX_SIZE) {
+        console.error(`[FORWARD] Queue full (${FORWARD_QUEUE_MAX_SIZE}) — dropping oldest message`);
+        pendingForwards.shift();
+    }
+    pendingForwards.push({ payload, queuedAt: Date.now(), attempts: 0 });
+    savePendingForwards();
+    ensureRetryTimer();
+}
+
 async function forwardIncoming(payload) {
     if (!WEBHOOK_URL) return;
+
+    // Webhook is known to be failing — queue directly instead of spamming it
+    if (isWebhookInBackoff()) {
+        queueForward(payload);
+        return;
+    }
+
     try {
         await attemptForward(payload);
+        recordWebhookSuccess();
     } catch (err) {
-        if (pendingForwards.length >= FORWARD_QUEUE_MAX_SIZE) {
-            console.error(`[FORWARD] Queue full — dropping oldest`);
-            pendingForwards.shift();
-        }
-        pendingForwards.push({ payload, queuedAt: Date.now(), attempts: 0 });
-        savePendingForwards();
-        ensureRetryTimer();
-        console.warn(`[WEBHOOK] Forward failed (${err.message}), queued. Pending: ${pendingForwards.length}`);
+        recordWebhookFailure();
+        queueForward(payload);
+        console.warn(`[WEBHOOK] Forward failed (${describeFetchError(err)}) url=${maskedWebhookUrl()}, queued. Pending: ${pendingForwards.length}, next retry in ${Math.ceil(Math.max(0, webhookBackoffUntil - Date.now()) / 1000)}s`);
     }
 }
 
@@ -525,8 +601,15 @@ function formatDDMMYYYY(dateOrTs) {
 }
 
 /**
- * Check if contact name is protected (should NOT be modified).
- * Protected = doesn't contain "customer" AND doesn't have date pattern
+ * Check if contact name is protected (should NOT be modified by the generic
+ * "customer - DD/MM/YYYY" rename).
+ *
+ * Protected = a user-defined name: it does NOT contain "customer" AND does NOT
+ * have a date pattern. Names we manage ("customer - 06/10/2026",
+ * "Budi - 06/10/2026") are never protected. Note that handleCustomerContact
+ * still overrides protection when the backend reports a purchase.
+ * Contacts coming from the form belanja carry our "name - DD/MM/YYYY" format,
+ * so they are matched by the date pattern and are NOT protected.
  */
 function isProtectedContact(name) {
     if (!name || typeof name !== 'string') return false;
@@ -550,6 +633,12 @@ function isProtectedContact(name) {
 async function checkCustomerPurchaseHistory(phone) {
     if (!WEBHOOK_URL) return { hasPurchase: false };
 
+    // Don't hammer a backend that is already known to be failing
+    if (isWebhookInBackoff()) {
+        console.warn(`[CONTACT] Purchase check skipped — webhook in backoff for ${Math.ceil((webhookBackoffUntil - Date.now()) / 1000)}s (${maskedWebhookUrl()})`);
+        return { hasPurchase: false, error: true };
+    }
+
     try {
         const payload = {
             phone: String(phone).replace(/\D/g, ''),
@@ -568,10 +657,12 @@ async function checkCustomerPurchaseHistory(phone) {
         });
 
         if (!res.ok) {
-            console.warn(`[CONTACT] Purchase check failed HTTP ${res.status}`);
-            return { hasPurchase: false };
+            console.warn(`[CONTACT] Purchase check failed HTTP ${res.status} (${maskedWebhookUrl()})`);
+            recordWebhookFailure();
+            return { hasPurchase: false, error: true };
         }
 
+        recordWebhookSuccess();
         const data = await res.json();
         return {
             hasPurchase: data.hasPurchase || false,
@@ -579,8 +670,9 @@ async function checkCustomerPurchaseHistory(phone) {
             lastPurchaseDate: data.lastPurchaseDate || null
         };
     } catch (err) {
-        console.warn(`[CONTACT] Purchase check error: ${err.message}`);
-        return { hasPurchase: false };
+        console.warn(`[CONTACT] Purchase check error: ${describeFetchError(err)} (${maskedWebhookUrl()})`);
+        recordWebhookFailure();
+        return { hasPurchase: false, error: true };
     }
 }
 
@@ -615,22 +707,34 @@ async function handleCustomerContact(phone, existingName) {
     if (!phone) return;
 
     try {
-        // Don't modify protected contacts
-        if (isProtectedContact(existingName)) {
-            console.log(`[CONTACT] Protected: ${phone} (${existingName}) — not modifying`);
+        // Always check purchase history first — a purchase overrides protection.
+        const purchase = await checkCustomerPurchaseHistory(phone);
+
+        // Backend unreachable: we can't tell whether this is a buyer, so don't
+        // risk overwriting an existing (possibly purchase-derived) name.
+        if (purchase.error) {
+            console.log(`[CONTACT] Skipping ${phone} (${existingName || 'no name'}) — purchase check unavailable`);
             return;
         }
 
-        // Check if customer has purchase record
-        const purchase = await checkCustomerPurchaseHistory(phone);
+        const protectedName = isProtectedContact(existingName);
 
         let newName;
         if (purchase.hasPurchase && purchase.customerName) {
-            // Customer has purchase → use customer name + purchase date
+            // Customer has purchase → use customer name + purchase date,
+            // even if the existing name is user-defined ("protected").
+            if (protectedName) {
+                console.log(`[CONTACT] ${phone} (${existingName}) is protected but has purchase history — overriding`);
+            }
             const purchaseDate = purchase.lastPurchaseDate || formatDDMMYYYY(new Date());
             newName = `${purchase.customerName} - ${purchaseDate}`;
         } else {
-            // No purchase yet, only chat → use generic "customer" + today's date
+            // No purchase: never touch protected (user-defined) names
+            if (protectedName) {
+                console.log(`[CONTACT] Protected: ${phone} (${existingName}) — no purchase, not modifying`);
+                return;
+            }
+            // Chat only → use generic "customer" + today's date
             const today = formatDDMMYYYY(new Date());
             newName = `customer - ${today}`;
         }
