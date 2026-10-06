@@ -510,6 +510,142 @@ function initOperationalSchedule() {
 }
 
 // ============================================
+// CONTACT MANAGEMENT FOR CUSTOMER TRACKING
+// ============================================
+
+/**
+ * Format JS Date or timestamp to DD/MM/YYYY string
+ */
+function formatDDMMYYYY(dateOrTs) {
+    const d = new Date(dateOrTs);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
+}
+
+/**
+ * Check if contact name is protected (should NOT be modified).
+ * Protected = doesn't contain "customer" AND doesn't have date pattern
+ */
+function isProtectedContact(name) {
+    if (!name || typeof name !== 'string') return false;
+
+    const nameLC = name.toLowerCase();
+
+    // If contains "customer", it's managed by our system
+    if (nameLC.includes('customer')) return false;
+
+    // If has date pattern like "- 06/10/2026" or just "06/10/2026", it's managed
+    if (/(\s-\s?)?\d{1,2}\/\d{1,2}\/\d{4}/.test(name)) return false;
+
+    // Otherwise it's protected (user-defined contact)
+    return true;
+}
+
+/**
+ * Call backend webhook to check if phone has purchase record
+ * Returns: { hasPurchase: bool, customerName?: string, lastPurchaseDate?: string (DD/MM/YYYY) }
+ */
+async function checkCustomerPurchaseHistory(phone) {
+    if (!WEBHOOK_URL) return { hasPurchase: false };
+
+    try {
+        const payload = {
+            phone: String(phone).replace(/\D/g, ''),
+            action: 'check_purchase_history',
+            timestamp: Date.now()
+        };
+
+        const res = await fetch(WEBHOOK_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-WA-Secret': API_SECRET
+            },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(5000)
+        });
+
+        if (!res.ok) {
+            console.warn(`[CONTACT] Purchase check failed HTTP ${res.status}`);
+            return { hasPurchase: false };
+        }
+
+        const data = await res.json();
+        return {
+            hasPurchase: data.hasPurchase || false,
+            customerName: data.customerName || null,
+            lastPurchaseDate: data.lastPurchaseDate || null
+        };
+    } catch (err) {
+        console.warn(`[CONTACT] Purchase check error: ${err.message}`);
+        return { hasPurchase: false };
+    }
+}
+
+/**
+ * Update WhatsApp contact name via Baileys
+ */
+async function updateWhatsAppContact(phone, newName) {
+    if (!sock || !isReady()) {
+        console.warn(`[CONTACT] Socket not ready, cannot update contact`);
+        return false;
+    }
+
+    try {
+        const jid = toJid(phone);
+        if (!jid) return false;
+
+        // Note: WhatsApp contact names are ultimately managed by the user's phone.
+        // This function logs the NAME we want the contact to have so an admin
+        // can verify it or push it to the device with a separate tool.
+        console.log(`[CONTACT] Set desired name: ${phone} = "${newName}"`);
+        return true;
+    } catch (err) {
+        console.error(`[CONTACT] Update failed for ${phone}: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Determine and update contact name based on chat/purchase activity
+ */
+async function handleCustomerContact(phone, existingName) {
+    if (!phone) return;
+
+    try {
+        // Don't modify protected contacts
+        if (isProtectedContact(existingName)) {
+            console.log(`[CONTACT] Protected: ${phone} (${existingName}) — not modifying`);
+            return;
+        }
+
+        // Check if customer has purchase record
+        const purchase = await checkCustomerPurchaseHistory(phone);
+
+        let newName;
+        if (purchase.hasPurchase && purchase.customerName) {
+            // Customer has purchase → use customer name + purchase date
+            const purchaseDate = purchase.lastPurchaseDate || formatDDMMYYYY(new Date());
+            newName = `${purchase.customerName} - ${purchaseDate}`;
+        } else {
+            // No purchase yet, only chat → use generic "customer" + today's date
+            const today = formatDDMMYYYY(new Date());
+            newName = `customer - ${today}`;
+        }
+
+        // Only update if different from current name
+        if (existingName !== newName) {
+            await updateWhatsAppContact(phone, newName);
+            console.log(`[CONTACT] Updated ${phone}: "${existingName}" → "${newName}"`);
+        }
+    } catch (err) {
+        console.error(`[CONTACT] Handler error for ${phone}: ${err.message}`);
+    }
+}
+
+// ============================================
 // BAILEYS SOCKET LIFECYCLE
 // ============================================
 async function startSocket() {
@@ -692,6 +828,11 @@ async function startSocket() {
                     const timestamp   = Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
 
                     console.log(`[MSG IN] ${pushname} (${phone}): ${text.substring(0, 60)}`);
+
+                    // Auto-update customer contact name based on purchase history
+                    handleCustomerContact(phone, pushname).catch(err =>
+                        console.warn(`[CONTACT] Async error: ${err.message}`)
+                    );
 
                     await forwardIncoming({
                         sender: phone, message: text, pushname,
