@@ -158,9 +158,93 @@ class GoogleContactsService {
     _isPlaceholderName(name) {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim();
-        if (/^Customer - \d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return true;
+        if (/^customer - \d{2}\/\d{2}\/\d{4}$/i.test(trimmed)) return true;
         if (/^.+ - \d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return true;
         return false;
+    }
+
+    _formatDateMakassar(date) {
+        return new Intl.DateTimeFormat('en-GB', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            timeZone: 'Asia/Makassar'
+        }).format(date);
+    }
+
+    /**
+     * Single naming path for Google Contacts.
+     * - Belanja: "{nama_lengkap} - {latest purchase date}"
+     * - Chat Only: "customer - {today}"
+     * Contacts with a human-given name (no "customer", no DD/MM/YYYY) are never touched.
+     * Never throws.
+     */
+    async syncCustomerContactName(phone) {
+        try {
+            const { rows } = await db.query(
+                'SELECT id, tipe, nama_lengkap FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1',
+                [phone]
+            );
+            if (rows.length === 0) return;
+            const customer = rows[0];
+
+            let desiredName;
+            if (customer.tipe === 'Belanja') {
+                const { rows: pRows } = await db.query(
+                    'SELECT MAX(created_at) AS last_purchase FROM purchases WHERE customer_id = $1',
+                    [customer.id]
+                );
+                const lastPurchase = pRows[0]?.last_purchase ? new Date(pRows[0].last_purchase) : new Date();
+                desiredName = `${customer.nama_lengkap} - ${this._formatDateMakassar(lastPurchase)}`;
+            } else {
+                desiredName = `customer - ${this._formatDateMakassar(new Date())}`;
+            }
+
+            const auth = await this.getAuthenticatedClient();
+            if (!auth) return;
+            const people = peopleApi({ version: 'v1', auth });
+
+            let formattedPhone = String(phone || '');
+            if (formattedPhone.startsWith('62')) formattedPhone = '+' + formattedPhone;
+            else if (!formattedPhone.startsWith('+')) formattedPhone = '+62' + formattedPhone;
+
+            const existing = await this.findContactByPhone(people, formattedPhone);
+
+            if (!existing || !existing.resourceName) {
+                await people.people.createContact({
+                    requestBody: {
+                        names: [{ givenName: desiredName, displayName: desiredName }],
+                        phoneNumbers: [{ value: formattedPhone, type: 'mobile' }]
+                    }
+                });
+                console.log(`[CONTACT] created: ${desiredName}`);
+                await this._markSynced(formattedPhone);
+                return;
+            }
+
+            const existingName = Array.isArray(existing.names) && existing.names[0]
+                ? existing.names[0].displayName || ''
+                : '';
+            const protectedName = !/customer/i.test(existingName) && !/\d{2}\/\d{2}\/\d{4}/.test(existingName);
+            if (protectedName) {
+                console.log(`[CONTACT] protected, skipped: ${existingName}`);
+                return;
+            }
+
+            if (existingName !== desiredName) {
+                const etag = existing.etag;
+                await people.people.updateContact({
+                    resourceName: existing.resourceName,
+                    updatePersonFields: 'names',
+                    requestBody: {
+                        names: [{ givenName: desiredName, displayName: desiredName }],
+                        etag
+                    }
+                });
+                console.log(`[CONTACT] updated: ${existingName} -> ${desiredName}`);
+            }
+            await this._markSynced(formattedPhone);
+        } catch (err) {
+            console.error('[CONTACT] sync failed:', err.message);
+        }
     }
 
     isPlaceholderName(name) {

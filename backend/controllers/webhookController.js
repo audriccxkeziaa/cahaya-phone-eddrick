@@ -176,7 +176,7 @@ exports.handleIncomingMessage = async (data) => {
                 day: '2-digit', month: '2-digit', year: 'numeric',
                 timeZone: 'Asia/Makassar'
             });
-            const customerName = knownGoogleName || `Customer - ${tanggal}`;
+            const customerName = knownGoogleName || `customer - ${tanggal}`;
 
             const { rows: inserted } = await db.query(
                 `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe, last_incoming_message_at)
@@ -191,26 +191,22 @@ exports.handleIncomingMessage = async (data) => {
 
             console.log(`[WEBHOOK] New customer (Chat Only): ${customerId} — ${customerName} — NO auto-reply`);
 
-            // Auto-save ke Google Contacts (format: "Customer - DD/MM/YYYY").
-            // Dilewati kalau kontaknya sudah dinamai manusia — jangan timpa nama asli.
+            // Penamaan kontak Google ditangani satu jalur: syncCustomerContactName (di bawah).
+            // Kontak yang sudah dinamai manusia (knownGoogleName) dilindungi di sana.
             if (knownGoogleName) {
-                console.log(`[WEBHOOK] Google Contact dilewati untuk ${cleanPhone} — sudah ada nama: ${knownGoogleName}`);
-            } else {
-                try {
-                    await googleService.saveContact({
-                        nama_lengkap: customerName,
-                        whatsapp: cleanPhone,
-                        source,
-                        tipe: 'Chat Only'
-                    });
-                } catch (gcErr) {
-                    console.warn('[WEBHOOK] Google Contact save failed:', gcErr.message);
-                }
+                console.log(`[WEBHOOK] Google Contact dilindungi untuk ${cleanPhone} — sudah ada nama: ${knownGoogleName}`);
             }
 
             // BERHENTI DI SINI. TIDAK kirim auto-reply.
             // WA Business bawaan yang handle reply.
         }
+
+        // Sinkronkan nama kontak Google di background (tidak blocking):
+        // Chat Only → "customer - DD/MM/YYYY" (tanggal diperbarui tiap chat),
+        // Belanja → "{nama} - tanggal pembelian terakhir". Nama asli tidak disentuh.
+        googleService.syncCustomerContactName(cleanPhone).catch(err => {
+            console.warn('[WEBHOOK] Google Contact sync failed:', err.message);
+        });
 
         // Simpan pesan ke database (dengan wa_message_id untuk idempotency)
         await db.query(

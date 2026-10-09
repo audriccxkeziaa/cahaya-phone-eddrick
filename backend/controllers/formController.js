@@ -251,16 +251,7 @@ exports.submitForm = async (req, res) => {
         // Background: auto-save to Google Contacts (tidak blocking response)
         (async () => {
             try {
-                await googleService.saveContact({
-                    nama_lengkap: finalName,
-                    whatsapp: cleanPhone,
-                    alamat: fullAddress || null,
-                    merk_unit: cleanMerk,
-                    tipe_unit: cleanTipe,
-                    metode_pembayaran: metode_pembayaran || null,
-                    source,
-                    tipe: 'Belanja'
-                });
+                await googleService.syncCustomerContactName(cleanPhone);
             } catch (gcError) {
                 console.warn('⚠️ Google Contact save failed:', gcError.message || gcError);
             }
