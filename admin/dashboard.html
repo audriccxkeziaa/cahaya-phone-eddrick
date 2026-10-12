@@ -495,7 +495,7 @@
             <div class="card" style="margin-bottom:16px;">
                 <div class="card-header">Template Pesan Ucapan</div>
                 <div class="card-body">
-                    <p style="font-size:12px;color:#8C8078;margin-bottom:8px;">Gunakan <strong>{nama}</strong> untuk nama customer, <strong>{umur}</strong> untuk usia (diisi otomatis dari tanggal lahir)</p>
+                    <p style="font-size:12px;color:#8C8078;margin-bottom:8px;">Gunakan <strong>{nama}</strong> untuk nama customer, <strong>{umur}</strong> untuk usia (diisi otomatis dari tanggal lahir). Variasi acak kustom: <strong>{Halo|Hai}</strong> — satu pilihan diacak tiap pesan.</p>
                     <textarea id="birthdayMessageTemplate" rows="5" style="width:100%;padding:12px 16px;border:1px solid #EDE8E3;border-radius:8px;font-size:14px;resize:vertical;font-family:Inter,sans-serif;background:#F5F3F0;" placeholder="Contoh: Selamat ulang tahun ke-{umur}, Kak {nama}! 🎂"></textarea>
                     <button onclick="saveBirthdayMessage()" class="btn-primary" style="width:auto;padding:8px 20px;margin-top:8px;font-size:13px;">Simpan Template</button>
                 </div>
@@ -534,7 +534,7 @@
                 <div class="card-body">
                     <p class="muted" style="font-size:12px;margin-bottom:10px;">On/Off auto-reply diatur di Dashboard → Pengaturan Otomatis Global. Di sini Anda edit isi pesannya.</p>
                     <div class="form-group">
-                        <label>Pesan <small class="muted">(gunakan {nama} untuk nama customer)</small></label>
+                        <label>Pesan <small class="muted">(gunakan {nama} untuk nama customer; variasi acak kustom: {Halo|Hai})</small></label>
                         <textarea id="waAutoReplyMessage" rows="4" style="width:100%;padding:12px 16px;border:1px solid #EDE8E3;border-radius:8px;font-size:14px;resize:vertical;font-family:Inter,sans-serif;background:#F5F3F0;" placeholder="Halo {nama}, terima kasih sudah menghubungi Cahaya Phone!"></textarea>
                     </div>
                     <button class="btn-primary" style="width:auto;" onclick="saveWAAutoReply()">Simpan Template</button>
