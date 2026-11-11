@@ -98,8 +98,11 @@ exports.resync = async (req, res) => {
                 const result = await googleService.saveContact(c);
                 if (result.success) {
                     saved++;
-                } else {
+                } else if (result.skipped) {
                     skipped++;
+                } else {
+                    failed++;
+                    errors.push({ id: c.id, nama: c.nama_lengkap, error: result.error });
                 }
             } catch (err) {
                 failed++;

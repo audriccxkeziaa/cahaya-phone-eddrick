@@ -21,7 +21,7 @@ exports.submitForm = async (req, res) => {
             tanggal_lahir, metode_pembayaran, tahu_dari, opted_in
         } = req.body;
 
-        const finalName = nama || nama_lengkap;
+        const finalName = String(nama || nama_lengkap || '').trim();
 
         // Honeypot trap — bots auto-fill every <input>; humans never see this field.
         // Silently 200 so the bot thinks it succeeded and doesn't probe further.
@@ -140,7 +140,8 @@ exports.submitForm = async (req, res) => {
                     nama_lengkap = $1, nama_sales = $2, merk_unit = $3, tipe_unit = $4,
                     harga = $5, qty = $6, tanggal_lahir = $7, alamat = $8,
                     metode_pembayaran = $9, tahu_dari = $10, source = $11,
-                    status = 'Completed', opted_in = $12, tipe = 'Belanja', updated_at = NOW()
+                    status = 'Completed', opted_in = $12, tipe = 'Belanja',
+                    google_contact_synced = FALSE, updated_at = NOW()
                 WHERE id = $13 RETURNING id`,
                 [
                     finalName, nama_sales || null, cleanMerk, cleanTipe,
@@ -157,14 +158,14 @@ exports.submitForm = async (req, res) => {
                     nama_lengkap, nama_sales, merk_unit, tipe_unit, harga, qty,
                     tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status, opted_in, tipe
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Completed', $13, 'Belanja')
-                ON CONFLICT (whatsapp) DO UPDATE SET
+                ON CONFLICT (whatsapp) WHERE whatsapp !~ '^620*$' DO UPDATE SET
                     nama_lengkap = EXCLUDED.nama_lengkap, nama_sales = EXCLUDED.nama_sales,
                     merk_unit = EXCLUDED.merk_unit, tipe_unit = EXCLUDED.tipe_unit,
                     harga = EXCLUDED.harga, qty = EXCLUDED.qty,
                     tanggal_lahir = EXCLUDED.tanggal_lahir, alamat = EXCLUDED.alamat,
                     metode_pembayaran = EXCLUDED.metode_pembayaran, tahu_dari = EXCLUDED.tahu_dari,
                     source = EXCLUDED.source, status = 'Completed', opted_in = EXCLUDED.opted_in,
-                    tipe = 'Belanja', updated_at = NOW()
+                    tipe = 'Belanja', google_contact_synced = FALSE, updated_at = NOW()
                 RETURNING id`,
                 [
                     finalName, nama_sales || null, cleanMerk, cleanTipe,
@@ -251,6 +252,7 @@ exports.submitForm = async (req, res) => {
         // Background: auto-save to Google Contacts (tidak blocking response)
         (async () => {
             try {
+                if (isPlaceholderPhone) return;
                 await googleService.syncCustomerContactName(cleanPhone);
             } catch (gcError) {
                 console.warn('⚠️ Google Contact save failed:', gcError.message || gcError);

@@ -19,6 +19,7 @@ const db = require('../config/database');
 const googleService = require('../config/google');
 const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
 const { safeEqual } = require('../config/csrfMiddleware');
+const { formatContactDate, getMessageDate } = require('../utils/contactUtils');
 
 /**
  * Handle incoming message dari WA Client (event internal, bukan HTTP)
@@ -27,6 +28,8 @@ const { safeEqual } = require('../config/csrfMiddleware');
 exports.handleIncomingMessage = async (data) => {
     try {
         const { sender: phoneNumber, message, pushname: senderName, wa_message_id: waMessageId } = data;
+        const messageDate = getMessageDate(data.timestamp);
+        const messageTime = messageDate.toISOString();
 
         // PENTING: pakai sanitizePhone supaya format konsisten (628xxx)
         const cleanPhone = sanitizePhone(phoneNumber.replace(/\D/g, ''));
@@ -74,30 +77,6 @@ exports.handleIncomingMessage = async (data) => {
             console.warn('[WEBHOOK] Ignore-list lookup failed:', err.message);
         }
 
-        // Nama dari Google Contacts, kalau ada. INI TIDAK LAGI MEMBATALKAN PENYIMPANAN.
-        //
-        // Versi lama: begitu nomor ketemu di Google Contacts dengan nama asli, seluruh
-        // chat masuk di-return lebih awal — customer tidak tersimpan ke DB, pesannya
-        // tidak tercatat, dan last_incoming_message_at customer lama tidak ter-update.
-        // Karena nomor pembeli yang pernah chat umumnya sudah tersimpan di kontak HP
-        // pemilik toko, efeknya: pembeli yang cuma chat berhenti tersimpan sama sekali.
-        //
-        // Sekarang nama Google hanya dipakai untuk dua hal: memberi nama record baru
-        // dengan nama asli (lebih berguna daripada "Customer - tanggal"), dan mencegah
-        // kita menimpa kontak Google yang sudah dinamai manusia.
-        let knownGoogleName = '';
-        try {
-            const googleContact = await googleService.findContactByPhoneNumber(cleanPhone);
-            const googleName = Array.isArray(googleContact?.names) && googleContact.names[0]
-                ? googleContact.names[0].displayName || googleContact.names[0].givenName || ''
-                : '';
-            if (googleName && !googleService.isPlaceholderName(googleName)) {
-                knownGoogleName = googleName;
-            }
-        } catch (err) {
-            console.warn('[WEBHOOK] Google contact lookup failed:', err.message);
-        }
-
         // Opt-out: jika customer balas "STOP" / "BERHENTI", set opted_in = false
         const optOutKeywords = ['stop', 'berhenti', 'unsubscribe', 'keluar'];
         const lowerMsg = message.trim().toLowerCase();
@@ -134,14 +113,18 @@ exports.handleIncomingMessage = async (data) => {
 
             if (['New', 'Inactive', 'Follow Up'].includes(currentStatus)) {
                 await db.query(
-                    'UPDATE customers SET status = $1, last_incoming_message_at = NOW() WHERE id = $2',
-                    ['Contacted', customerId]
+                    `UPDATE customers SET status = $1,
+                        last_incoming_message_at = GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC')
+                     WHERE id = $2`,
+                    ['Contacted', customerId, messageTime]
                 );
                 customerStatus = 'Contacted';
             } else {
                 await db.query(
-                    'UPDATE customers SET last_incoming_message_at = NOW() WHERE id = $1',
-                    [customerId]
+                    `UPDATE customers SET
+                        last_incoming_message_at = GREATEST(last_incoming_message_at, $2::timestamptz AT TIME ZONE 'UTC')
+                     WHERE id = $1`,
+                    [customerId, messageTime]
                 );
                 customerStatus = currentStatus;
             }
@@ -167,53 +150,36 @@ exports.handleIncomingMessage = async (data) => {
                 source = 'TikTok';
             }
 
-            // Nama default: "Customer - DD/MM/YYYY".
-            // Tidak pakai pushname — pushname bisa asal-asalan / beda orang sama nomor.
-            // Tapi kalau nomor ini sudah punya nama asli di Google Contacts, pakai itu:
-            // nama yang diketik manusia lebih berguna daripada placeholder tanggal.
-            const now = new Date();
-            const tanggal = now.toLocaleDateString('id-ID', {
-                day: '2-digit', month: '2-digit', year: 'numeric',
-                timeZone: 'Asia/Makassar'
-            });
-            const customerName = knownGoogleName || `customer - ${tanggal}`;
+            // Use the message's actual date, including deliveries retried after midnight.
+            const customerName = `customer - ${formatContactDate(messageDate)}`;
 
             const { rows: inserted } = await db.query(
-                `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe, last_incoming_message_at)
-                VALUES ($1, $2, $3, 'New', 'Chat Only', NOW())
-                ON CONFLICT (whatsapp) DO UPDATE SET updated_at = CURRENT_TIMESTAMP, last_incoming_message_at = NOW()
+                `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe, last_incoming_message_at, created_at)
+                VALUES ($1, $2, $3, 'New', 'Chat Only', $4::timestamptz AT TIME ZONE 'UTC', $4::timestamptz AT TIME ZONE 'UTC')
+                ON CONFLICT (whatsapp) WHERE whatsapp !~ '^620*$' DO UPDATE SET
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_incoming_message_at = GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at)
                 RETURNING id, status`,
-                [customerName, cleanPhone, source]
+                [customerName, cleanPhone, source, messageTime]
             );
 
             customerId = inserted[0].id;
             customerStatus = inserted[0].status || 'New';
 
             console.log(`[WEBHOOK] New customer (Chat Only): ${customerId} — ${customerName} — NO auto-reply`);
-
-            // Penamaan kontak Google ditangani satu jalur: syncCustomerContactName (di bawah).
-            // Kontak yang sudah dinamai manusia (knownGoogleName) dilindungi di sana.
-            if (knownGoogleName) {
-                console.log(`[WEBHOOK] Google Contact dilindungi untuk ${cleanPhone} — sudah ada nama: ${knownGoogleName}`);
-            }
-
-            // BERHENTI DI SINI. TIDAK kirim auto-reply.
-            // WA Business bawaan yang handle reply.
         }
 
-        // Sinkronkan nama kontak Google di background (tidak blocking):
-        // Chat Only → "customer - DD/MM/YYYY" (tanggal diperbarui tiap chat),
-        // Belanja → "{nama} - tanggal pembelian terakhir". Nama asli tidak disentuh.
+        // The same path handles first-contact names and names submitted via the form.
         googleService.syncCustomerContactName(cleanPhone).catch(err => {
             console.warn('[WEBHOOK] Google Contact sync failed:', err.message);
         });
 
         // Simpan pesan ke database (dengan wa_message_id untuk idempotency)
         await db.query(
-            `INSERT INTO messages (customer_id, direction, message, wa_message_id)
-             VALUES ($1, $2, $3, $4)
+            `INSERT INTO messages (customer_id, direction, message, wa_message_id, sent_at)
+             VALUES ($1, $2, $3, $4, $5::timestamptz AT TIME ZONE 'UTC')
              ON CONFLICT DO NOTHING`,
-            [customerId, 'in', message, waMessageId || null]
+            [customerId, 'in', message, waMessageId || null, messageTime]
         );
 
         console.log(`[WEBHOOK] Message saved for customer: ${customerId}`);
@@ -269,7 +235,8 @@ exports.handleWhatsAppWebhook = async (req, res) => {
                 sender: req.body.sender,
                 message: req.body.message,
                 pushname: req.body.pushname || '',
-                wa_message_id: req.body.wa_message_id || null
+                wa_message_id: req.body.wa_message_id || null,
+                timestamp: req.body.timestamp
             };
         }
         // Format Fonnte
@@ -277,7 +244,8 @@ exports.handleWhatsAppWebhook = async (req, res) => {
             data = {
                 sender: req.body.sender,
                 message: req.body.message,
-                pushname: req.body.member?.name || ''
+                pushname: req.body.member?.name || '',
+                timestamp: req.body.timestamp
             };
         }
         // Format Wablas
@@ -285,7 +253,8 @@ exports.handleWhatsAppWebhook = async (req, res) => {
             data = {
                 sender: req.body.phone,
                 message: req.body.message,
-                pushname: req.body.pushname || ''
+                pushname: req.body.pushname || '',
+                timestamp: req.body.timestamp
             };
         }
         else {
@@ -400,7 +369,8 @@ async function processMetaPayload(body) {
                     sender: m.from,
                     message: text,
                     pushname: contactName,
-                    wa_message_id: m.id
+                    wa_message_id: m.id,
+                    timestamp: m.timestamp
                 });
             }
 

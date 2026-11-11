@@ -6,6 +6,8 @@
 const { OAuth2Client } = require('google-auth-library');
 const { people: peopleApi } = require('@googleapis/people');
 const db = require('./database');
+const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
+const { formatContactDate } = require('../utils/contactUtils');
 require('dotenv').config();
 
 class GoogleContactsService {
@@ -14,6 +16,9 @@ class GoogleContactsService {
         this.clientSecret = process.env.GOOGLE_CLIENT_SECRET;
         this.redirectUri = process.env.GOOGLE_REDIRECT_URI;
         this._invalidGrantAt = null;
+        // People API mutations for the connected account must run sequentially.
+        this._contactSyncQueue = Promise.resolve();
+        this._recentContacts = new Map();
     }
 
     getOAuth2Client() {
@@ -56,6 +61,7 @@ class GoogleContactsService {
         );
 
         this._invalidGrantAt = null;
+        this._recentContacts.clear();
         return tokens;
     }
 
@@ -119,258 +125,195 @@ class GoogleContactsService {
     }
 
     /**
-     * Search existing contact by phone number
+     * Match the complete normalized number, never just its last digits.
+     * Search uses a cache, so warm it first and fall back to the contact list
+     * before deciding to create a new person.
      */
     async findContactByPhone(people, phone) {
-        try {
-            const res = await people.people.searchContacts({
-                query: phone,
-                readMask: 'names,phoneNumbers',
-                pageSize: 5
-            });
+        const cleanPhone = sanitizePhone(phone);
+        if (!validatePhone(cleanPhone).valid || /^620*$/.test(cleanPhone)) return null;
+        const personFields = 'names,phoneNumbers,metadata';
+        const matches = person => (person?.phoneNumbers || []).some(p =>
+            [p.canonicalForm, p.value].some(value => value && sanitizePhone(value) === cleanPhone)
+        );
 
-            const results = res.data.results || [];
-            // Match by phone number (strip non-digits for comparison)
-            const cleanSearch = phone.replace(/\D/g, '');
-            for (const r of results) {
-                const phones = r.person?.phoneNumbers || [];
-                for (const p of phones) {
-                    if (p.value && p.value.replace(/\D/g, '').endsWith(cleanSearch.slice(-10))) {
-                        return r.person;
-                    }
-                }
+        const recent = this._recentContacts.get(cleanPhone);
+        if (recent && Date.now() - recent.savedAt < 5 * 60 * 1000) {
+            try {
+                const { data } = await people.people.get({
+                    resourceName: recent.resourceName, personFields
+                });
+                if (matches(data)) return data;
+            } catch (err) {
+                if ((err.response?.status || err.code) !== 404) throw err;
             }
-            return null;
-        } catch (err) {
-            console.warn('⚠️ Contact search failed:', err.message);
-            return null;
         }
+        this._recentContacts.delete(cleanPhone);
+
+        // A failed search must propagate: treating it as "not found" creates duplicates.
+        await people.people.searchContacts({ query: '', readMask: personFields });
+        const queries = ['+' + cleanPhone, cleanPhone, '0' + cleanPhone.slice(2)];
+        for (const query of queries) {
+            const res = await people.people.searchContacts({
+                query, readMask: personFields, pageSize: 30
+            });
+            const match = (res.data.results || []).map(r => r.person).find(matches);
+            if (match) return match;
+        }
+
+        let pageToken;
+        do {
+            const { data } = await people.people.connections.list({
+                resourceName: 'people/me', personFields, pageSize: 1000,
+                ...(pageToken ? { pageToken } : {})
+            });
+            const match = (data.connections || []).find(matches);
+            if (match) return match;
+            pageToken = data.nextPageToken;
+        } while (pageToken);
+        return null;
     }
 
     async findContactByPhoneNumber(phone) {
         const auth = await this.getAuthenticatedClient();
         if (!auth) return null;
-
-        const people = peopleApi({ version: 'v1', auth });
-        return this.findContactByPhone(people, phone);
+        return this.findContactByPhone(peopleApi({ version: 'v1', auth }), phone);
     }
 
     _isPlaceholderName(name) {
         if (!name || typeof name !== 'string') return false;
-        const trimmed = name.trim();
-        if (/^customer - \d{2}\/\d{2}\/\d{4}$/i.test(trimmed)) return true;
-        if (/^.+ - \d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return true;
-        return false;
-    }
-
-    _formatDateMakassar(date) {
-        return new Intl.DateTimeFormat('en-GB', {
-            day: '2-digit', month: '2-digit', year: 'numeric',
-            timeZone: 'Asia/Makassar'
-        }).format(date);
-    }
-
-    /**
-     * Single naming path for Google Contacts.
-     * - Belanja: "{nama_lengkap} - {latest purchase date}"
-     * - Chat Only: "customer - {today}"
-     * Contacts with a human-given name (no "customer", no DD/MM/YYYY) are never touched.
-     * Never throws.
-     */
-    async syncCustomerContactName(phone) {
-        try {
-            const { rows } = await db.query(
-                'SELECT id, tipe, nama_lengkap FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1',
-                [phone]
-            );
-            if (rows.length === 0) return;
-            const customer = rows[0];
-
-            let desiredName;
-            if (customer.tipe === 'Belanja') {
-                const { rows: pRows } = await db.query(
-                    'SELECT MAX(created_at) AS last_purchase FROM purchases WHERE customer_id = $1',
-                    [customer.id]
-                );
-                const lastPurchase = pRows[0]?.last_purchase ? new Date(pRows[0].last_purchase) : new Date();
-                desiredName = `${customer.nama_lengkap} - ${this._formatDateMakassar(lastPurchase)}`;
-            } else {
-                desiredName = `customer - ${this._formatDateMakassar(new Date())}`;
-            }
-
-            const auth = await this.getAuthenticatedClient();
-            if (!auth) return;
-            const people = peopleApi({ version: 'v1', auth });
-
-            let formattedPhone = String(phone || '');
-            if (formattedPhone.startsWith('62')) formattedPhone = '+' + formattedPhone;
-            else if (!formattedPhone.startsWith('+')) formattedPhone = '+62' + formattedPhone;
-
-            const existing = await this.findContactByPhone(people, formattedPhone);
-
-            if (!existing || !existing.resourceName) {
-                await people.people.createContact({
-                    requestBody: {
-                        names: [{ givenName: desiredName, displayName: desiredName }],
-                        phoneNumbers: [{ value: formattedPhone, type: 'mobile' }]
-                    }
-                });
-                console.log(`[CONTACT] created: ${desiredName}`);
-                await this._markSynced(formattedPhone);
-                return;
-            }
-
-            const existingName = Array.isArray(existing.names) && existing.names[0]
-                ? existing.names[0].displayName || ''
-                : '';
-            const protectedName = !/customer/i.test(existingName) && !/\d{2}\/\d{2}\/\d{4}/.test(existingName);
-            if (protectedName) {
-                console.log(`[CONTACT] protected, skipped: ${existingName}`);
-                return;
-            }
-
-            if (existingName !== desiredName) {
-                const etag = existing.etag;
-                await people.people.updateContact({
-                    resourceName: existing.resourceName,
-                    updatePersonFields: 'names',
-                    requestBody: {
-                        names: [{ givenName: desiredName, displayName: desiredName }],
-                        etag
-                    }
-                });
-                console.log(`[CONTACT] updated: ${existingName} -> ${desiredName}`);
-            }
-            await this._markSynced(formattedPhone);
-        } catch (err) {
-            console.error('[CONTACT] sync failed:', err.message);
-        }
+        return /^.+\s*-\s*\d{2}\/\d{2}\/\d{4}$/i.test(name.trim()) ||
+            /^customer$/i.test(name.trim());
     }
 
     isPlaceholderName(name) {
         return this._isPlaceholderName(name);
     }
 
-    async saveContact(customer) {
+    /**
+     * All callers (incoming chat, form submission, and retry) use current DB data.
+     * Chat Only keeps the first contact date. Belanja uses the submitted name.
+     */
+    syncCustomerContactName(phone) {
+        const cleanPhone = sanitizePhone(phone);
+        const run = () => this._syncCustomerContactName(cleanPhone);
+        const pending = this._contactSyncQueue.then(run, run);
+        this._contactSyncQueue = pending.catch(() => {});
+        return pending;
+    }
+
+    async _syncCustomerContactName(phone) {
+        if (!validatePhone(phone).valid || /^620*$/.test(phone)) {
+            return { success: false, skipped: true, error: 'Invalid phone number' };
+        }
+
         try {
-            console.log(`📇 Attempting to save contact: ${customer.nama_lengkap}`);
+            const { rows } = await db.query(
+                `SELECT id, tipe, nama_lengkap, whatsapp, alamat, source,
+                        merk_unit, tipe_unit, metode_pembayaran,
+                        created_at AT TIME ZONE 'UTC' AS first_contact_at
+                 FROM customers WHERE whatsapp = $1 ORDER BY created_at ASC LIMIT 1`,
+                [phone]
+            );
+            if (rows.length === 0) return { success: false, skipped: true, error: 'Customer not found' };
+            const customer = rows[0];
+            await db.query('UPDATE customers SET google_contact_synced = FALSE WHERE id = $1', [customer.id]);
+            const isBuyer = customer.tipe === 'Belanja';
+            const firstDate = formatContactDate(customer.first_contact_at);
+            const desiredName = isBuyer
+                ? customer.nama_lengkap.trim()
+                : `customer - ${firstDate}`;
+
             const auth = await this.getAuthenticatedClient();
-            if (!auth) {
-                console.warn('⚠️ Google Contacts not connected, skipping save');
-                return { success: false, error: 'Not connected' };
-            }
-
+            if (!auth) return { success: false, error: 'Not connected' };
             const people = peopleApi({ version: 'v1', auth });
-
-            // Format phone: ensure +62 prefix
-            let phone = customer.whatsapp || '';
-            if (phone.startsWith('62')) phone = '+' + phone;
-            else if (!phone.startsWith('+')) phone = '+62' + phone;
-
-            // Format tanggal: DD/MM/YYYY
-            const now = new Date();
-            const tanggal = `${String(now.getDate()).padStart(2,'0')}/${String(now.getMonth()+1).padStart(2,'0')}/${now.getFullYear()}`;
-
-            // Nama kontak berdasarkan tipe:
-            // Belanja (form submit): "Nama - 20/03/2026"
-            // Chat Only (WA chat): "Customer - 20/03/2026"
-            const tipe = customer.tipe || 'Belanja';
-            let contactName;
-            if (tipe === 'Chat Only') {
-                contactName = `Customer - ${tanggal}`;
-            } else {
-                contactName = `${customer.nama_lengkap} - ${tanggal}`;
-            }
-
-            // Build contact data
-            const contactData = {
-                names: [{
-                    givenName: contactName,
-                    displayName: contactName
-                }],
-                phoneNumbers: [{
-                    value: phone,
-                    type: 'mobile'
-                }]
-            };
-
-            if (customer.alamat) {
-                contactData.addresses = [{
-                    formattedValue: customer.alamat,
-                    type: 'home'
-                }];
-            }
-
-            const notes = [];
-            notes.push(`Tipe: ${tipe}`);
+            const existing = await this.findContactByPhone(people, phone);
+            const notes = [`Tipe: ${customer.tipe}`, `Kontak pertama: ${firstDate}`];
             if (customer.merk_unit) notes.push(`Merk: ${customer.merk_unit}`);
             if (customer.tipe_unit) notes.push(`Unit: ${customer.tipe_unit}`);
             if (customer.metode_pembayaran) notes.push(`Bayar: ${customer.metode_pembayaran}`);
             if (customer.source) notes.push(`Dari: ${customer.source}`);
-            notes.push(`Tanggal: ${tanggal}`);
-
-            contactData.biographies = [{
+            const biographies = [{
                 value: `[Cahaya Phone]\n${notes.join('\n')}`,
                 contentType: 'TEXT_PLAIN'
             }];
 
-            // Check if contact already exists by phone number
-            const existing = await this.findContactByPhone(people, phone);
-
             let result;
-            if (existing && existing.resourceName) {
-                const etag = existing.etag;
-                const existingName = Array.isArray(existing.names) && existing.names[0]
-                    ? existing.names[0].displayName || existing.names[0].givenName || ''
-                    : '';
-                const canUpdateName = this._isPlaceholderName(existingName);
-
-                if (canUpdateName) {
-                    // Update placeholder contact names and details.
-                    const updateBody = { ...contactData, etag };
-                    result = await people.people.updateContact({
-                        resourceName: existing.resourceName,
-                        updatePersonFields: 'names,phoneNumbers,addresses,biographies',
-                        requestBody: updateBody
-                    });
-                    console.log(`✅ Google Contact updated: ${contactName}`);
-                    await this._markSynced(phone);
-                    return { success: true, resourceName: result.data.resourceName, action: 'updated' };
+            let action;
+            if (!existing?.resourceName) {
+                const contactData = {
+                    names: [{ givenName: desiredName }],
+                    phoneNumbers: [{ value: '+' + phone, type: 'mobile' }],
+                    biographies
+                };
+                if (customer.alamat) {
+                    contactData.addresses = [{ formattedValue: customer.alamat, type: 'home' }];
                 }
-
-                // Preserve existing real contact name; only refresh biography.
-                const updateBody = { etag, biographies: contactData.biographies };
+                result = await people.people.createContact({ requestBody: contactData });
+                action = 'created';
+            } else {
+                // Fresh CONTACT source etags are required by updateContact.
+                const { data: current } = await people.people.get({
+                    resourceName: existing.resourceName,
+                    personFields: 'names,phoneNumbers,metadata'
+                });
+                const existingName = current.names?.[0]?.displayName || current.names?.[0]?.givenName || '';
+                // A form submission is authoritative for this number. Incoming chat
+                // alone preserves human-given names in the phone's address book.
+                const canUpdateName = isBuyer || !existingName || this._isPlaceholderName(existingName);
+                const requestBody = {
+                    etag: current.etag,
+                    metadata: {
+                        sources: (current.metadata?.sources || []).filter(source => source.type === 'CONTACT')
+                    },
+                    biographies
+                };
+                const fields = ['biographies'];
+                if (canUpdateName && existingName !== desiredName) {
+                    requestBody.names = [{ givenName: desiredName }];
+                    fields.push('names');
+                }
+                if (customer.alamat) {
+                    requestBody.addresses = [{ formattedValue: customer.alamat, type: 'home' }];
+                    fields.push('addresses');
+                }
                 result = await people.people.updateContact({
                     resourceName: existing.resourceName,
-                    updatePersonFields: 'biographies',
-                    requestBody: updateBody
+                    updatePersonFields: fields.join(','),
+                    requestBody
                 });
-                console.log(`ℹ️ Google Contact preserved name (${existingName}); biography updated`);
-                await this._markSynced(phone);
-                return { success: true, resourceName: result.data.resourceName, action: 'preserved' };
-            } else {
-                // Create new contact
-                result = await people.people.createContact({
-                    requestBody: contactData
-                });
-                console.log(`✅ Google Contact created: ${contactName}`);
-                await this._markSynced(phone);
-                return { success: true, resourceName: result.data.resourceName, action: 'created' };
+                action = canUpdateName ? 'updated' : 'preserved';
             }
 
-        } catch (error) {
-            console.error('❌ Google Contact save failed:', error.message);
-            console.error('❌ Full error:', JSON.stringify(error.response?.data || error.errors || error.message));
-            return { success: false, error: error.message };
+            const resourceName = result.data.resourceName;
+            this._recentContacts.set(phone, { resourceName, savedAt: Date.now() });
+            if (this._recentContacts.size > 1000) {
+                this._recentContacts.delete(this._recentContacts.keys().next().value);
+            }
+            await this._markSynced(phone, customer);
+            console.log(`[CONTACT] ${action}: ${desiredName}`);
+            return { success: true, resourceName, action };
+        } catch (err) {
+            console.error('[CONTACT] sync failed:', err.message);
+            return { success: false, error: err.message };
         }
     }
 
-    async _markSynced(phone) {
-        const cleanPhone = phone.replace(/^\+/, '');
-        await db.query('UPDATE customers SET google_contact_synced = TRUE WHERE whatsapp = $1', [cleanPhone]).catch(() => {});
+    // Retry follows the same naming rules, using fresh customer data.
+    async saveContact(customer) {
+        return this.syncCustomerContactName(customer.whatsapp);
+    }
+
+    async _markSynced(phone, customer) {
+        await db.query(
+            `UPDATE customers SET google_contact_synced = TRUE
+             WHERE whatsapp = $1 AND nama_lengkap = $2 AND tipe = $3`,
+            [sanitizePhone(phone), customer.nama_lengkap, customer.tipe]
+        );
     }
 
     async disconnect() {
+        this._recentContacts.clear();
         try {
             const auth = await this.getAuthenticatedClient();
             if (auth) {

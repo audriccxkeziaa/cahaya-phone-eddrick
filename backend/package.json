@@ -6,6 +6,7 @@
     "node": ">=18.x"
   },
   "scripts": {
+    "test": "node --test tests/contact-sync.test.js",
     "migrate": "node migrate.js",
     "start": "node server.js",
     "dev": "node server.js"
