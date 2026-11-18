@@ -49,19 +49,6 @@
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Holiday accents stay within the existing red, white and gold identity. */
-.christmas-greeting { display: none; }
-.christmas-season { --bg-page: #f5f5ef; --gold: #b99850; }
-.christmas-season body { background-image: radial-gradient(ellipse at top right, rgba(28, 87, 67, .07), transparent 55%); }
-.christmas-season .header::before { background: linear-gradient(90deg, #174c3b, #b99850, #b91c1c, #b99850, #174c3b); height: 4px; }
-.christmas-season .christmas-greeting { display: block; color: #235640; font-size: 12px; margin-top: 12px; }
-.christmas-season .christmas-admin { display: flex; align-items: center; gap: 16px; padding: 18px 24px; margin: 0 0 22px; border: 1px solid #d7dfd2; border-radius: 14px; background: linear-gradient(110deg, #edf4ed, #fffdf6); box-shadow: 0 4px 18px rgba(24, 72, 52, .04); }
-.christmas-admin strong { font-family: 'Playfair Display', Georgia, serif; font-size: 20px; font-weight: 500; }
-.christmas-admin small { display: block; color: #526758; margin-top: 2px; }
-.christmas-star { font-size: 38px; color: #a78944; line-height: 1; }
-.christmas-season-label { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .14em; color: #6b613f; }
-.christmas-season .login-box { border-top: 3px solid #27563f; }
-
 /* Monthly monitoring and purchase details. */
 #pipelineModal .modal-content { max-width: 960px; }
 .pipeline-toolbar, .pipeline-years, .pipeline-tabs, .pipeline-pagination { display: flex; align-items: center; gap: 10px; }
@@ -97,9 +84,6 @@
 .pipeline-back { margin-bottom: 4px; }
 #googleResyncResult { white-space: pre-line; line-height: 1.7; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
-    .christmas-season .christmas-admin { padding: 14px 16px; gap: 10px; }
-    .christmas-admin strong { font-size: 17px; }
-    .christmas-season-label { display: none; }
     .pipeline-summary { grid-template-columns: 1fr 1fr; }
     .pipeline-summary strong { font-size: 15px; }
     .pipeline-table th, .pipeline-table td { padding: 10px 7px; }

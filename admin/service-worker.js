@@ -4,7 +4,7 @@
 //   - API calls (/api/*): network-only (data must stay live)
 //   - Everything else: network-first, fallback to cache
 
-const CACHE_VERSION = 'cp-admin-v17';
+const CACHE_VERSION = 'cp-admin-v18';
 // HTML pages — network-first so updates ship immediately.
 const HTML_ASSETS = [
   '/admin/',

@@ -56,12 +56,10 @@ Migrasi juga memperbaiki label Chat Only lama memakai `customers.created_at` (ch
 
 Perubahan nama/konversi menjadi Belanja dari admin juga menandai kontak pending dan menjalankan sinkronisasi. Pembelian yang ditambahkan lewat admin mengisi tanggal beli pertama hanya jika belum terisi; edit, pembelian ulang, maupun penghapusan riwayat tidak mengganti tanggal tersebut.
 
-## Monitoring bulanan dan tampilan Natal
+## Monitoring bulanan
 
 Laporan Sukses dan Omzet menampilkan Januari–Desember pada setiap tahun, termasuk bulan kosong. Panah tahun menampilkan tahun dari data customer maupun pembelian. Transaksi sukses dihitung dari catatan `purchases`, bukan jumlah customer berstatus Completed; pembelian ulang masuk bulan tanggal belanjanya dalam WITA. Customer belanja adalah jumlah customer unik pada bulan tersebut. Customer baru adalah jumlah registrasi, ditampilkan terpisah tanpa membagi transaksi ulang dengan registrasi untuk membuat rate.
 
 Klik nama bulan untuk melihat tanggal/jam WITA, customer, nomor WA, produk, jumlah unit, subtotal, sales, dan metode pembayaran. Detail berisi maksimal 25 transaksi per halaman; ringkasan omzet/customer/unit tetap mencakup seluruh bulan. Membuka ulang laporan mengambil data baru agar koreksi transaksi terlihat. Di HP, tabel bisa digeser untuk melihat kolom berikutnya.
 
 Verifikasi deployment: coba customer lama yang belanja pada dua bulan berbeda dan transaksi pada batas 23:59:59/00:00:00 WITA; cocokkan omzet ringkasan dengan detail. Uji kedua tombol kontak, termasuk kegagalan sebagian, sambungkan ulang akun Google bila kredensial dicabut, lalu retry. Tes lokal memakai Google/WhatsApp tiruan; hasil pada akun toko perlu diperiksa sesudah deploy.
-
-Aksen Natal merah/hijau/emas tampil pada form customer, login admin, dan dashboard selama November–Desember mengikuti WITA. Bulan lain menggunakan tampilan reguler. Service worker admin diperbarui agar aset JS/CSS baru ikut dimuat.
