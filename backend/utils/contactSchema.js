@@ -1,6 +1,7 @@
 // New timestamps use timestamptz; legacy timestamp columns contain UTC wall time.
 async function ensureContactSchema(db) {
     await db.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS first_purchase_at TIMESTAMPTZ');
+    await db.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS google_contact_synced BOOLEAN DEFAULT FALSE');
     // Run on migration/startup, never on normal chats or repeat purchases. Once set,
     // this timestamp survives purchase edits/deletions and application restarts.
     await db.query(`
@@ -8,6 +9,17 @@ async function ensureContactSchema(db) {
             COALESCE((SELECT MIN(p.created_at) FROM purchases p WHERE p.customer_id = c.id),
                      c.created_at) AT TIME ZONE 'UTC'
         WHERE c.tipe = 'Belanja' AND c.first_purchase_at IS NULL
+    `);
+    // Repair labels produced by the previous latest-chat rule, then let the
+    // ordinary retry button update their existing Google contacts.
+    await db.query(`
+        UPDATE customers SET
+            nama_lengkap = 'customer - ' || TO_CHAR(created_at AT TIME ZONE 'UTC'
+                AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY'),
+            google_contact_synced = FALSE
+        WHERE tipe = 'Chat Only' AND created_at IS NOT NULL
+          AND nama_lengkap IS DISTINCT FROM 'customer - ' || TO_CHAR(created_at
+                AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY')
     `);
 }
 

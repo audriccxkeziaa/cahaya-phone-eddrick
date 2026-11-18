@@ -1049,7 +1049,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
                 document.getElementById('pipelinePeriod').textContent = bulanNow;
                 document.getElementById('pipelineActive').textContent = d.pipeline_active || 0;
-                document.getElementById('pipelineSuccess').textContent = d.pipeline_success || 0;
+                document.getElementById('pipelineSuccess').textContent = d.transaction_count || 0;
                 document.getElementById('totalOmzet').textContent = formatRp(d.total_omzet);
                 document.getElementById('omzetBulanIni').textContent = formatRp(d.omzet_bulan_ini);
 
@@ -3747,174 +3747,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // PIPELINE DETAIL MODAL — with year selector & archive
     // ============================================
 
-    const pipelineCache = new Map();   // key: year -> { data, meta }
-    let pipelineState = { year: null, type: 'success' };
-
-    async function fetchPipelineYear(year) {
-        if (pipelineCache.has(year)) return pipelineCache.get(year);
-        const resp = await apiCall(`/admin/pipeline/monthly?year=${year}`);
-        if (resp && resp.success) {
-            const payload = { data: resp.data, meta: resp.meta };
-            pipelineCache.set(year, payload);
-            return payload;
-        }
-        return null;
-    }
-
-    window.showPipelineDetail = async function(type) {
-        const modal = document.getElementById('pipelineModal');
-        const body = document.getElementById('pipelineModalBody');
-
-        modal.classList.add('show');
-        body.innerHTML = '<div class="loading">Memuat data...</div>';
-
-        // Default to current year on first open
-        if (!pipelineState.year) {
-            const initial = await fetchPipelineYear(new Date().getFullYear());
-            if (!initial) { body.innerHTML = '<div class="no-data">Gagal memuat</div>'; return; }
-            pipelineState.year = initial.meta.year;
-        }
-        pipelineState.type = type || pipelineState.type || 'success';
-        renderPipelineModal();
-    };
-
-    window.closePipelineModal = function() {
-        document.getElementById('pipelineModal').classList.remove('show');
-    };
-
-    window.changePipelineYear = async function(direction) {
-        const cached = pipelineCache.get(pipelineState.year);
-        const meta = cached && cached.meta;
-        if (!meta) return;
-        const years = meta.availableYears || [meta.currentYear];
-        const idx = years.indexOf(pipelineState.year);
-        const newIdx = idx + direction;  // direction: -1 = older, +1 = newer
-        if (newIdx < 0 || newIdx >= years.length) return;
-        const newYear = years[newIdx];
-        const body = document.getElementById('pipelineModalBody');
-        body.innerHTML = '<div class="loading">Memuat ' + newYear + '...</div>';
-        await fetchPipelineYear(newYear);
-        pipelineState.year = newYear;
-        renderPipelineModal();
-    };
-
-    window.switchPipelineType = function(type) {
-        pipelineState.type = type;
-        renderPipelineModal();
-    };
-
-    function renderPipelineModal() {
-        const title = document.getElementById('pipelineModalTitle');
-        const body = document.getElementById('pipelineModalBody');
-        const cached = pipelineCache.get(pipelineState.year);
-        if (!cached) { body.innerHTML = '<div class="no-data">Data belum dimuat</div>'; return; }
-
-        const months = cached.data;
-        const meta = cached.meta;
-        const type = pipelineState.type;
-        const formatRp = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val || 0);
-
-        const years = meta.availableYears || [meta.currentYear];
-        const idx = years.indexOf(pipelineState.year);
-        const canPrev = idx < years.length - 1;  // older = larger idx
-        const canNext = idx > 0;
-
-        const yearBadge = meta.isArchive
-            ? '<span style="background:rgba(107,114,128,0.1);color:#6B7280;font-size:11px;padding:3px 10px;border-radius:10px;font-weight:600;margin-left:8px;">Arsip</span>'
-            : (meta.isFuture
-                ? '<span style="background:rgba(37,99,235,0.1);color:#2563EB;font-size:11px;padding:3px 10px;border-radius:10px;font-weight:600;margin-left:8px;">Mendatang</span>'
-                : '<span style="background:rgba(22,163,74,0.1);color:#16A34A;font-size:11px;padding:3px 10px;border-radius:10px;font-weight:600;margin-left:8px;">Aktif</span>');
-
-        title.innerHTML = (type === 'omzet' ? 'Detail Omzet Per Bulan' : 'Detail Transaksi Sukses Per Bulan');
-
-        let tableHtml = '';
-        if (months.length === 0) {
-            tableHtml = '<div style="text-align:center;padding:40px;color:#8C8078;">Belum ada data untuk ' + pipelineState.year + '</div>';
-        } else if (type === 'success') {
-            const rows = months.map((m, i) => {
-                const prev = months[i - 1];
-                const rate = Number(m.total) > 0 ? (Number(m.sukses) / Number(m.total) * 100).toFixed(1) : '0.0';
-                let change = '<span style="color:#8C8078;">—</span>';
-                if (prev) {
-                    const diff = Number(m.sukses) - Number(prev.sukses);
-                    if (diff > 0) change = `<span style="color:#16A34A;">▲ +${diff}</span>`;
-                    else if (diff < 0) change = `<span style="color:#DC2626;">▼ ${diff}</span>`;
-                }
-                return `<tr><td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${m.label}</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;"><strong style="color:#16A34A;">${m.sukses}</strong></td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${m.total}</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${rate}%</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${change}</td></tr>`;
-            }).join('');
-            tableHtml = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <thead><tr style="background:#FAFAF8;">
-                    <th style="padding:10px 8px;text-align:left;font-size:11px;color:#8C8078;">BULAN</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">SUKSES</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">TOTAL</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">RATE</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">PERUBAHAN</th>
-                </tr></thead><tbody>${rows}</tbody></table>`;
-        } else {
-            const rows = months.map((m, i) => {
-                const prev = months[i - 1];
-                const omzet = Number(m.omzet) || 0;
-                let change = '<span style="color:#8C8078;">—</span>';
-                if (prev) {
-                    const prevOmzet = Number(prev.omzet) || 0;
-                    const diff = omzet - prevOmzet;
-                    if (prevOmzet > 0) {
-                        const pct = ((diff / prevOmzet) * 100).toFixed(1);
-                        if (diff > 0) change = `<span style="color:#16A34A;">▲ +${pct}%</span>`;
-                        else if (diff < 0) change = `<span style="color:#DC2626;">▼ ${pct}%</span>`;
-                    } else if (omzet > 0) {
-                        change = `<span style="color:#16A34A;">▲ Baru</span>`;
-                    }
-                }
-                return `<tr><td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${m.label}</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;"><strong style="color:#B91C1C;">${formatRp(omzet)}</strong></td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${m.sukses}</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${change}</td></tr>`;
-            }).join('');
-            tableHtml = `<table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <thead><tr style="background:#FAFAF8;">
-                    <th style="padding:10px 8px;text-align:left;font-size:11px;color:#8C8078;">BULAN</th>
-                    <th style="padding:10px 8px;text-align:right;font-size:11px;color:#8C8078;">OMZET</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">TRANSAKSI</th>
-                    <th style="padding:10px 8px;text-align:center;font-size:11px;color:#8C8078;">PERUBAHAN</th>
-                </tr></thead><tbody>${rows}</tbody></table>`;
-        }
-
-        const archiveNotice = meta.isArchive
-            ? '<div style="background:#FAFAF8;border:1px solid #EDE8E3;padding:8px 12px;border-radius:6px;font-size:12px;color:#5C534B;margin-bottom:12px;"><strong>Arsip ' + pipelineState.year + '</strong> — data tahun lewat, hanya untuk referensi.</div>'
-            : (meta.year === meta.currentYear
-                ? '<div style="font-size:11px;color:#8C8078;margin-bottom:12px;">Menampilkan dari bulan saat ini hingga Desember ' + meta.currentYear + '. Data bulan lewat tahun ini juga ada di arsip tahun depan.</div>'
-                : '');
-
-        body.innerHTML = `
-            <!-- Year selector + type tabs -->
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
-                <div style="display:flex;align-items:center;gap:6px;">
-                    <button onclick="changePipelineYear(-1)" ${canPrev ? '' : 'disabled'}
-                        style="padding:6px 10px;border:1px solid #EDE8E3;background:#fff;border-radius:6px;cursor:${canPrev ? 'pointer' : 'not-allowed'};opacity:${canPrev ? '1' : '0.4'};font-size:13px;">◀</button>
-                    <div style="font-weight:700;font-size:18px;color:#1A1412;padding:0 8px;display:flex;align-items:center;">
-                        ${pipelineState.year}${yearBadge}
-                    </div>
-                    <button onclick="changePipelineYear(1)" ${canNext ? '' : 'disabled'}
-                        style="padding:6px 10px;border:1px solid #EDE8E3;background:#fff;border-radius:6px;cursor:${canNext ? 'pointer' : 'not-allowed'};opacity:${canNext ? '1' : '0.4'};font-size:13px;">▶</button>
-                </div>
-                <div style="display:flex;gap:4px;background:#F5F3F0;border-radius:8px;padding:3px;">
-                    <button onclick="switchPipelineType('success')" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;background:${type === 'success' ? '#fff' : 'transparent'};color:${type === 'success' ? '#1A1412' : '#8C8078'};box-shadow:${type === 'success' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none'};">Sukses</button>
-                    <button onclick="switchPipelineType('omzet')" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;background:${type === 'omzet' ? '#fff' : 'transparent'};color:${type === 'omzet' ? '#1A1412' : '#8C8078'};box-shadow:${type === 'omzet' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none'};">Omzet</button>
-                </div>
-            </div>
-            ${archiveNotice}
-            ${tableHtml}
-        `;
-    }
-
-    window.closePipelineModal = function() {
-        document.getElementById('pipelineModal').classList.remove('show');
-    };
+    initializePipelineReports(apiCall, esc);
 
     // ============================================
     // GOOGLE CONTACTS INTEGRATION
@@ -3984,13 +3817,14 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     };
 
     window.resyncGoogleContacts = async function(all = false) {
-        const confirmation = all
-            ? 'Perbarui semua nama kontak customer di Google Contacts? Sebelum belanja: customer - tanggal chat terakhir. Setelah belanja: nama form - tanggal pembelian pertama. Semua tanggal mengikuti WITA/Gorontalo. Proses ini bisa memakan waktu beberapa menit.'
-            : 'Simpan ulang kontak customer yang gagal tersimpan ke Google Contacts? (hanya yang pending/gagal)';
-        if (!confirm(confirmation)) return;
         const resultDiv = document.getElementById('googleResyncResult');
         const buttons = ['googleResyncBtn', 'googleResyncAllBtn'].map(id => document.getElementById(id));
         const btn = buttons[all ? 1 : 0];
+        if (!btn || buttons.some(button => button?.disabled)) return;
+        const confirmation = all
+            ? 'Perbarui semua nama kontak customer di Google Contacts? Sebelum belanja: customer - tanggal chat pertama. Setelah belanja: nama form - tanggal pembelian pertama. Semua tanggal mengikuti WITA/Gorontalo. Proses ini bisa memakan waktu beberapa menit.'
+            : 'Simpan ulang kontak customer yang gagal tersimpan ke Google Contacts? (hanya yang pending/gagal)';
+        if (!confirm(confirmation)) return;
         const originalLabel = btn.textContent;
         buttons.forEach(button => { button.disabled = true; });
         btn.textContent = 'Syncing...';
@@ -3998,8 +3832,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         resultDiv.textContent = all
             ? 'Memperbarui semua nama kontak customer, mohon tunggu...'
             : 'Memproses kontak yang gagal tersimpan, mohon tunggu...';
+        const totals = { total: 0, saved: 0, failed: 0, skipped: 0 };
+        const errors = [];
         try {
-            const totals = { total: 0, saved: 0, failed: 0, skipped: 0 };
             let afterId = 0;
             let hasMore;
             do {
@@ -4010,8 +3845,14 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     throw new Error(data?.error || data?.message || 'Tidak dapat menghubungi server. Silakan coba lagi.');
                 }
                 for (const key of Object.keys(totals)) totals[key] += data[key] || 0;
+                for (const error of data.errors || []) {
+                    if (errors.length < 5) errors.push(`${error.nama || 'Kontak #' + error.id}: ${error.error}`);
+                }
                 resultDiv.textContent = `Diproses: ${totals.total} kontak, ${totals.saved} tersimpan, ${totals.failed} gagal. Mohon tunggu...`;
-                hasMore = data.hasMore;
+                hasMore = data.hasMore === true;
+                if (hasMore && (!Number.isSafeInteger(data.nextAfterId) || data.nextAfterId <= afterId)) {
+                    throw new Error('Proses tidak maju. Silakan ulangi sinkronisasi kontak yang gagal.');
+                }
                 afterId = data.nextAfterId;
             } while (hasMore);
             if (totals.total === 0) {
@@ -4020,13 +3861,16 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             } else {
                 resultDiv.textContent = `Selesai: ${totals.saved} tersimpan, ${totals.failed} gagal, ${totals.skipped} dilewati dari ${totals.total} kontak. Nama di WhatsApp akan mengikuti setelah kontak HP tersinkron.`;
                 resultDiv.style.color = totals.failed > 0 ? '#DC2626' : '#16a34a';
+                if (errors.length) resultDiv.textContent += '\nDetail kegagalan:\n' + errors.join('\n') + '\nKontak gagal tetap pending; gunakan Sync Kontak Gagal untuk mencoba lagi.';
             }
         } catch (err) {
             resultDiv.textContent = 'Gagal re-sync: ' + err.message;
+            if (totals.total) resultDiv.textContent += `\nSebelum terhenti: ${totals.saved} tersimpan, ${totals.failed} gagal dari ${totals.total} kontak. Gunakan Sync Kontak Gagal untuk melanjutkan kontak pending.`;
             resultDiv.style.color = '#DC2626';
+        } finally {
+            buttons.forEach(button => { button.disabled = false; });
+            btn.textContent = originalLabel;
         }
-        buttons.forEach(button => { button.disabled = false; });
-        btn.textContent = originalLabel;
     };
 
     // Check for Google OAuth redirect result

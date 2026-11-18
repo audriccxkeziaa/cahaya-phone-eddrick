@@ -121,7 +121,7 @@ function fixture({ customers = [customer()], contacts = [], database, ...options
                 if (!c.last_incoming_message_at || timestamp > c.last_incoming_message_at) {
                     c.last_incoming_message_at = timestamp;
                 }
-                if (c.tipe === 'Chat Only') c.nama_lengkap = `customer - ${formatContactDate(c.last_incoming_message_at)}`;
+                if (c.tipe === 'Chat Only') c.nama_lengkap = `customer - ${formatContactDate(c.first_contact_at)}`;
                 c.google_contact_synced = false;
                 return { rows: [{ status: c.status }], rowCount: 1 };
             }
@@ -253,8 +253,8 @@ test('first chat, next-day chat, form submission and later chat keep one custome
     assert.equal(f.name(), 'customer - 28/10/2026');
     assert.equal((await f.receive('tomorrow', '2026-10-29T10:00:00Z')).success, true);
     await f.google._contactSyncQueue;
-    assert.equal(f.name(), 'customer - 29/10/2026');
-    assert.equal(f.state.customers.get(PHONE).nama_lengkap, 'customer - 29/10/2026');
+    assert.equal(f.name(), 'customer - 28/10/2026');
+    assert.equal(f.state.customers.get(PHONE).nama_lengkap, 'customer - 28/10/2026');
     const response = await f.submit('  Amna Walangadi  ', '+62 812 3456 7890');
     assert.equal(response.success, true);
     await f.google._contactSyncQueue;
@@ -417,7 +417,7 @@ test('duplicate delivery is ignored and old deliveries do not move the latest-ch
     assert.equal(f.state.messages.length, 2);
     assert.equal(f.state.customers.get(PHONE).last_incoming_message_at.toISOString(),
         '2026-10-30T10:00:00.000Z');
-    assert.equal(f.name(), 'customer - 30/10/2026');
+    assert.equal(f.name(), 'customer - 28/10/2026');
 });
 
 test('placeholder numbers never create or update Google contacts', async () => {
@@ -526,11 +526,11 @@ for (const { label, body, expectedSaved } of [
     });
 }
 
-test('the requested November examples use latest chat for leads and first purchase for buyers', () => {
-    const c = customer({ latest_chat_at: '2026-11-18T04:00:00Z' });
+test('November examples keep first chat for leads and first purchase for buyers', () => {
+    const c = customer({ first_contact_at: '2026-11-18T04:00:00Z', latest_chat_at: '2026-11-18T04:00:00Z' });
     assert.equal(getCustomerContactName(c), 'customer - 18/11/2026');
     c.latest_chat_at = '2026-11-19T04:00:00Z';
-    assert.equal(getCustomerContactName(c), 'customer - 19/11/2026');
+    assert.equal(getCustomerContactName(c), 'customer - 18/11/2026');
     Object.assign(c, { tipe: 'Belanja', nama_lengkap: 'budi', first_purchase_at: '2026-11-18T04:00:00Z' });
     assert.equal(getCustomerContactName(c), 'budi - 18/11/2026');
     c.latest_chat_at = '2026-11-21T04:00:00Z';
@@ -594,10 +594,10 @@ test('PostgreSQL: chat rollover and first purchase at 23:59 WITA work in differe
         assert.equal(f.name(), 'customer - 28/10/2026', zone);
         await f.receive('at-midnight', '2026-10-28T16:00:00Z');
         await f.google._contactSyncQueue;
-        assert.equal(f.name(), 'customer - 29/10/2026', zone);
+        assert.equal(f.name(), 'customer - 28/10/2026', zone);
         await f.receive('late-old-message', '2026-10-28T15:59:58Z');
         await f.google._contactSyncQueue;
-        assert.equal(f.name(), 'customer - 29/10/2026', zone);
+        assert.equal(f.name(), 'customer - 28/10/2026', zone);
         assert.equal((await db.query('SELECT nama_lengkap FROM customers')).rows[0].nama_lengkap, f.name());
         await f.submit('Budi'); // FIRST_PURCHASE is 23:59:59 on 29 October WITA.
         await f.google._contactSyncQueue;
@@ -687,6 +687,112 @@ test('PostgreSQL: a chat already in progress cannot overwrite a concurrent form 
     assert.equal(c.first_purchase_at.toISOString(), FIRST_PURCHASE);
 });
 
+test('PostgreSQL: stale chat upsert and late older deliveries preserve the first saved date', async t => {
+    const db = await postgresFixture(t);
+    const f = fixture({ database: db, customers: [] });
+    await f.receive('initial', FIRST_MESSAGE);
+    await f.google._contactSyncQueue;
+    const realQuery = db.query.bind(db);
+    db.query = (sql, params) => sql.includes('SELECT id, nama_lengkap, status, tipe FROM customers')
+        ? Promise.resolve({ rows: [] }) : realQuery(sql, params);
+    await f.receive('race-upsert', '2026-11-18T04:00:00Z');
+    await f.google._contactSyncQueue;
+    db.query = realQuery;
+    await f.receive('older-delayed', '2026-10-20T04:00:00Z');
+    await f.google._contactSyncQueue;
+    assert.equal(f.name(), 'customer - 28/10/2026');
+    const rows = (await db.query("SELECT *, created_at AT TIME ZONE 'UTC' AS first_utc, last_incoming_message_at AT TIME ZONE 'UTC' AS incoming_utc FROM customers")).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].nama_lengkap, f.name());
+    assert.equal(rows[0].incoming_utc.toISOString(), '2026-11-18T04:00:00.000Z');
+    assert.equal(rows[0].first_utc.toISOString(), FIRST_MESSAGE);
+});
+
+test('PostgreSQL: migration repairs legacy latest-chat labels and queues Google retry only once', async t => {
+    const db = await postgresFixture(t);
+    await db.exec(`INSERT INTO customers (nama_lengkap, whatsapp, tipe, created_at, last_incoming_message_at, google_contact_synced)
+        VALUES ('customer - 19/11/2026', '${PHONE}', 'Chat Only', '2026-11-18 04:00:00', '2026-11-19 04:00:00', TRUE)`);
+    await ensureContactSchema(db);
+    let c = (await db.query("SELECT *, last_incoming_message_at AT TIME ZONE 'UTC' AS incoming_utc FROM customers")).rows[0];
+    assert.equal(c.nama_lengkap, 'customer - 18/11/2026');
+    assert.equal(c.google_contact_synced, false);
+    assert.equal(c.incoming_utc.toISOString(), '2026-11-19T04:00:00.000Z');
+    await db.exec('UPDATE customers SET google_contact_synced = TRUE');
+    await ensureContactSchema(db);
+    c = (await db.query('SELECT * FROM customers')).rows[0];
+    assert.equal(c.google_contact_synced, true);
+});
+
+test('PostgreSQL: contact migration supports a fresh installation without the Google sync column', async t => {
+    const db = await postgresFixture(t, { migrate: false });
+    await db.exec('ALTER TABLE customers DROP COLUMN google_contact_synced');
+    await ensureContactSchema(db);
+    await db.exec("INSERT INTO customers (nama_lengkap, whatsapp, tipe) VALUES ('Lead', '6281234567890', 'Chat Only')");
+    await ensureContactSchema(db);
+    const c = (await db.query('SELECT * FROM customers')).rows[0];
+    assert.equal(c.google_contact_synced, false);
+    assert.ok(c.nama_lengkap.startsWith('customer - '));
+    assert.equal(c.first_purchase_at, null);
+});
+
+test('PostgreSQL: admin conversion/name edits sync Google and preserve the first purchase date', async t => {
+    const db = await postgresFixture(t);
+    await db.exec(`INSERT INTO customers (nama_lengkap, whatsapp, tipe, created_at)
+        VALUES ('customer - 18/10/2026', '${PHONE}', 'Chat Only', '2026-10-18 04:00:00');
+        INSERT INTO purchases (customer_id, created_at) VALUES (1, '2026-11-18 04:00:00');`);
+    const f = fixture({ database: db, contacts: [contact('Old name')] });
+    const controller = loadModule('controllers/adminController.js', {
+        '../config/database': db, '../config/google': f.google,
+        '../config/whatsapp': {}, '../config/csrfMiddleware': {}
+    });
+    let response;
+    const res = { status(code) { throw new Error('Unexpected status ' + code); }, json(data) { response = data; } };
+    await controller.updateCustomer({ params: { id: 1 }, body: { tipe: 'Belanja', nama_lengkap: 'Budi' } }, res);
+    await f.google._contactSyncQueue;
+    assert.equal(response.success, true);
+    assert.equal(f.name(), 'Budi - 18/11/2026');
+    await db.exec("INSERT INTO purchases (customer_id, created_at) VALUES (1, '2026-12-18 04:00:00')");
+    await controller.updateCustomer({ params: { id: 1 }, body: { tipe: 'Belanja', nama_lengkap: 'Budi Baru' } }, res);
+    await f.google._contactSyncQueue;
+    assert.equal(f.name(), 'Budi Baru - 18/11/2026');
+    assert.equal((await db.query('SELECT first_purchase_at FROM customers')).rows[0].first_purchase_at.toISOString(), '2026-11-18T04:00:00.000Z');
+});
+
+test('PostgreSQL: purchases added by admin set first purchase once and survive history deletion', async t => {
+    const db = await postgresFixture(t);
+    db.connect = async () => ({ query: db.query.bind(db), release() {} });
+    await db.exec(`SET TIME ZONE 'Pacific/Auckland';
+        INSERT INTO customers (nama_lengkap, whatsapp, tipe, created_at)
+        VALUES ('Budi', '${PHONE}', 'Chat Only', '2026-10-18 04:00:00');`);
+    const f = fixture({ database: db });
+    const controller = loadModule('controllers/adminController.js', {
+        '../config/database': db, '../config/google': f.google,
+        '../config/whatsapp': { enqueueAutoReply: async () => ({ success: true }) }, '../config/csrfMiddleware': {}
+    });
+    let response;
+    const res = { status(code) { throw new Error('Unexpected status ' + code); }, json(data) { response = data; } };
+    const item = { merk_unit: 'Samsung', tipe_unit: 'A55', harga: 5000000, qty: 1 };
+    await controller.saveCustomerPurchases({ params: { id: 1 }, body: { purchases: [item] } }, res);
+    await f.google._contactSyncQueue;
+    assert.equal(response.success, true);
+    let c = (await db.query('SELECT * FROM customers')).rows[0];
+    const first = c.first_purchase_at.toISOString();
+    assert.equal(c.tipe, 'Belanja');
+    assert.equal(c.status, 'Completed');
+    assert.equal(f.name(), 'Budi - ' + formatContactDate(first));
+    const purchaseTime = (await db.query("SELECT created_at AT TIME ZONE 'UTC' AS bought_at FROM purchases")).rows[0].bought_at;
+    assert.equal(purchaseTime.toISOString(), first);
+    const original = response.data.purchases[0];
+    await controller.saveCustomerPurchases({ params: { id: 1 }, body: { purchases: [original, item] } }, res);
+    await f.google._contactSyncQueue;
+    assert.equal(response.data.purchases.length, 2);
+    await controller.saveCustomerPurchases({ params: { id: 1 }, body: { purchases: response.data.purchases.map(p => ({ ...p, deleted: true })) } }, res);
+    await f.google._contactSyncQueue;
+    c = (await db.query('SELECT * FROM customers')).rows[0];
+    assert.equal(c.first_purchase_at.toISOString(), first);
+    assert.equal(f.name(), 'Budi - ' + formatContactDate(first));
+});
+
 test('PostgreSQL + admin UI: full resync follows cursors and repairs every old saved contact', async t => {
     const db = await postgresFixture(t);
     const contacts = [];
@@ -725,7 +831,7 @@ test('PostgreSQL + admin UI: full resync follows cursors and repairs every old s
     await context.window.resyncGoogleContacts(true);
     assert.deepEqual(bodies, [{ all: true, afterId: 0 }, { all: true, afterId: 5 }]);
     assert.equal(f.state.updates.length, 6);
-    assert.ok([...f.state.contacts.values()].every(c => c.names[0].givenName === 'customer - 29/10/2026'));
+    assert.ok([...f.state.contacts.values()].every(c => c.names[0].givenName === 'customer - 28/10/2026'));
     assert.match(elements.googleResyncResult.textContent, /6 tersimpan, 0 gagal/);
     assert.equal(elements.googleResyncAllBtn.disabled, false);
     assert.equal(elements.googleResyncBtn.disabled, false);
@@ -735,4 +841,65 @@ test('PostgreSQL + admin UI: full resync follows cursors and repairs every old s
     await context.window.resyncGoogleContacts(true);
     assert.match(elements.googleResyncResult.textContent, /Gagal re-sync: Google Contacts not connected/);
     assert.equal(elements.googleResyncAllBtn.disabled, false);
+    // Per-contact errors remain visible and both buttons become usable again.
+    context.apiCall = async () => ({ success: true, total: 1, saved: 0, failed: 1, skipped: 0,
+        hasMore: false, nextAfterId: 1, errors: [{ id: 1, nama: 'Budi', error: 'Google quota exceeded' }] });
+    await context.window.resyncGoogleContacts();
+    assert.match(elements.googleResyncResult.textContent, /Budi: Google quota exceeded/);
+    assert.equal(elements.googleResyncBtn.disabled, false);
+    // Guard against repeated clicks and a broken cursor causing infinite requests.
+    const before = bodies.length;
+    elements.googleResyncBtn.disabled = true;
+    await context.window.resyncGoogleContacts(true);
+    assert.equal(bodies.length, before);
+    elements.googleResyncBtn.disabled = false;
+    context.apiCall = async () => ({ success: true, total: 1, saved: 1, hasMore: true, nextAfterId: 0 });
+    await context.window.resyncGoogleContacts();
+    assert.match(elements.googleResyncResult.textContent, /Proses tidak maju/);
+    assert.equal(elements.googleResyncBtn.disabled, false);
+});
+
+test('PostgreSQL + admin UI: failed-only retry traverses batches and recovers failures without touching synced contacts', async t => {
+    const db = await postgresFixture(t);
+    for (let id = 1; id <= 8; id++) {
+        await db.query(`INSERT INTO customers (nama_lengkap, whatsapp, tipe, created_at, google_contact_synced)
+            VALUES ('customer - 18/11/2026', $1, 'Chat Only', '2026-11-18 04:00:00', $2)`,
+        ['628123456780' + id, id === 8 ? true : id === 2 ? null : false]);
+    }
+    let fail = true;
+    const visited = [];
+    const controller = loadModule('controllers/googleController.js', {
+        '../config/database': db,
+        '../config/google': {
+            isConnected: async () => true,
+            saveContact: async c => {
+                visited.push(c.id);
+                if (c.id === 2 && fail) return { success: false, error: 'Temporary Google failure' };
+                await db.query('UPDATE customers SET google_contact_synced = TRUE WHERE id = $1', [c.id]);
+                return { success: true };
+            }
+        }
+    });
+    const elements = Object.fromEntries(['googleResyncBtn', 'googleResyncAllBtn', 'googleResyncResult'].map(id =>
+        [id, { textContent: id, disabled: false, style: {} }]));
+    const context = { window: {}, confirm: () => true, document: { getElementById: id => elements[id] },
+        apiCall: async (endpoint, options) => {
+            let data;
+            await controller.resync({ body: JSON.parse(options.body) }, { json(result) { data = result; } });
+            return data;
+        } };
+    const admin = fs.readFileSync(path.resolve(__dirname, '../../admin/admin.js'), 'utf8');
+    const start = admin.indexOf('    window.resyncGoogleContacts =');
+    vm.runInNewContext(admin.slice(start, admin.indexOf('    // Check for Google OAuth redirect result', start)), context);
+    await context.window.resyncGoogleContacts();
+    assert.deepEqual(visited, [1, 2, 3, 4, 5, 6, 7]);
+    assert.match(elements.googleResyncResult.textContent, /6 tersimpan, 1 gagal/);
+    assert.match(elements.googleResyncResult.textContent, /Temporary Google failure/);
+    visited.length = 0;
+    fail = false;
+    await context.window.resyncGoogleContacts();
+    assert.deepEqual(visited, [2]);
+    assert.match(elements.googleResyncResult.textContent, /1 tersimpan, 0 gagal/);
+    await context.window.resyncGoogleContacts();
+    assert.equal(elements.googleResyncResult.textContent, 'Tidak ada kontak yang pending.');
 });

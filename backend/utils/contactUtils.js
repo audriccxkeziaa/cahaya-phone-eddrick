@@ -16,7 +16,7 @@ function getCustomerContactName(customer) {
     if (customer.tipe === 'Belanja') {
         return `${customer.nama_lengkap.trim()} - ${formatContactDate(customer.first_purchase_at)}`;
     }
-    return `customer - ${formatContactDate(customer.latest_chat_at || customer.first_contact_at)}`;
+    return `customer - ${formatContactDate(customer.first_contact_at)}`;
 }
 
 // Baileys/Meta send Unix seconds; some webhook providers send milliseconds.

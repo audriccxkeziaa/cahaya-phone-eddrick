@@ -49,6 +49,63 @@
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Holiday accents stay within the existing red, white and gold identity. */
+.christmas-greeting { display: none; }
+.christmas-season { --bg-page: #f5f5ef; --gold: #b99850; }
+.christmas-season body { background-image: radial-gradient(ellipse at top right, rgba(28, 87, 67, .07), transparent 55%); }
+.christmas-season .header::before { background: linear-gradient(90deg, #174c3b, #b99850, #b91c1c, #b99850, #174c3b); height: 4px; }
+.christmas-season .christmas-greeting { display: block; color: #235640; font-size: 12px; margin-top: 12px; }
+.christmas-season .christmas-admin { display: flex; align-items: center; gap: 16px; padding: 18px 24px; margin: 0 0 22px; border: 1px solid #d7dfd2; border-radius: 14px; background: linear-gradient(110deg, #edf4ed, #fffdf6); box-shadow: 0 4px 18px rgba(24, 72, 52, .04); }
+.christmas-admin strong { font-family: 'Playfair Display', Georgia, serif; font-size: 20px; font-weight: 500; }
+.christmas-admin small { display: block; color: #526758; margin-top: 2px; }
+.christmas-star { font-size: 38px; color: #a78944; line-height: 1; }
+.christmas-season-label { margin-left: auto; font-size: 10px; text-transform: uppercase; letter-spacing: .14em; color: #6b613f; }
+.christmas-season .login-box { border-top: 3px solid #27563f; }
+
+/* Monthly monitoring and purchase details. */
+#pipelineModal .modal-content { max-width: 960px; }
+.pipeline-toolbar, .pipeline-years, .pipeline-tabs, .pipeline-pagination { display: flex; align-items: center; gap: 10px; }
+.pipeline-toolbar, .pipeline-pagination { justify-content: space-between; flex-wrap: wrap; }
+.pipeline-years > strong { font-size: 23px; }
+.pipeline-year-badge { background: #edf4ed; color: #235640; border-radius: 8px; font-size: 11px; padding: 3px 8px; }
+.pipeline-tabs { background: var(--bg-input); border-radius: 9px; padding: 4px; gap: 3px; }
+.pipeline-tabs button { border: 0; border-radius: 6px; background: transparent; padding: 8px 16px; color: var(--text-secondary); cursor: pointer; font: inherit; font-size: 12px; }
+.pipeline-tabs button[aria-pressed="true"] { background: white; color: var(--text-primary); box-shadow: 0 1px 4px #0001; }
+.pipeline-note { color: var(--text-secondary); font-size: 12px; margin: 14px 0; line-height: 1.7; }
+.pipeline-table-wrap { overflow-x: auto; }
+.pipeline-mobile-hint { display: none; }
+.pipeline-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pipeline-table th { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); background: var(--bg-section); white-space: nowrap; }
+.pipeline-table th, .pipeline-table td { padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.pipeline-table tbody tr:hover { background: #faf9f4; }
+.pipeline-table small { display: block; color: var(--text-secondary); font-size: 11px; margin-top: 4px; }
+.pipeline-month-link { background: none; border: none; color: var(--text-primary); padding: 4px 0; cursor: pointer; font: inherit; white-space: nowrap; text-align: left; }
+.pipeline-month-link span { margin-left: 8px; color: #8b713d; }
+.pipeline-month-link:hover { color: var(--red); text-decoration: underline; }
+.pipeline-month-link:focus-visible, .pipeline-tabs button:focus-visible { outline: 2px solid #27563f; outline-offset: 3px; }
+.pipeline-money { font-weight: 600; color: var(--red); white-space: nowrap; }
+.pipeline-count, .pipeline-up { color: #207345; font-weight: 600; }
+.pipeline-down { color: #b91c1c; }
+.pipeline-table tfoot { background: #f7f5ee; font-weight: 600; }
+.pipeline-summary { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr; gap: 10px; margin: 18px 0; }
+.pipeline-summary > div { padding: 14px; background: #f6f7f1; border: 1px solid #e1e6db; border-radius: 10px; }
+.pipeline-summary small { display: block; font-size: 11px; color: var(--text-secondary); }
+.pipeline-summary strong { display: block; margin-top: 5px; font-size: 17px; color: #235640; }
+.pipeline-month-title { margin-top: 18px; font-size: 22px; font-family: 'Playfair Display', Georgia, serif; }
+.pipeline-purchases { min-width: 720px; }
+.pipeline-pagination { margin-top: 18px; font-size: 11px; color: var(--text-secondary); }
+.pipeline-back { margin-bottom: 4px; }
+#googleResyncResult { white-space: pre-line; line-height: 1.7; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    .christmas-season .christmas-admin { padding: 14px 16px; gap: 10px; }
+    .christmas-admin strong { font-size: 17px; }
+    .christmas-season-label { display: none; }
+    .pipeline-summary { grid-template-columns: 1fr 1fr; }
+    .pipeline-summary strong { font-size: 15px; }
+    .pipeline-table th, .pipeline-table td { padding: 10px 7px; }
+    .pipeline-mobile-hint { display: block; color: var(--text-secondary); font-size: 10px; margin: 12px 0 7px; }
+}
+
 /* ============================================
    RESET & BASE
    ============================================ */

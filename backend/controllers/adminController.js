@@ -7,6 +7,7 @@ const db = require('../config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const whatsappService = require('../config/whatsapp');
+const googleService = require('../config/google');
 const { sanitizePhone } = require('../utils/phoneUtils');
 const { setAuthCookie, issueCsrfToken, clearAuthCookies, safeEqual } = require('../config/csrfMiddleware');
 
@@ -313,15 +314,7 @@ exports.getStats = async (req, res) => {
 
         // Sales stats from purchases (transaction-date based: omzet & success counts).
         // Repeat orders attribute to the actual purchase month, not customer registration month.
-        const { rows: sales } = await db.query(`
-            SELECT
-                COALESCE(SUM(harga * COALESCE(qty, 1)), 0) as total_omzet,
-                COALESCE(SUM(harga * COALESCE(qty, 1)) FILTER (WHERE created_at >= DATE_TRUNC('month', NOW())), 0) as omzet_bulan_ini,
-                COALESCE(SUM(harga * COALESCE(qty, 1)) FILTER (WHERE created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month' AND created_at < DATE_TRUNC('month', NOW())), 0) as omzet_bulan_lalu,
-                COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', NOW())) as success_bulan_ini,
-                COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month' AND created_at < DATE_TRUNC('month', NOW())) as success_bulan_lalu
-            FROM purchases
-        `);
+        const { rows: sales } = await require('./pipelineController').getSalesSummary();
 
         res.json({
             success: true,
@@ -334,98 +327,6 @@ exports.getStats = async (req, res) => {
             success: false,
             message: 'Gagal mengambil statistik'
         });
-    }
-};
-
-/**
- * Get monthly pipeline breakdown
- * GET /api/admin/pipeline/monthly
- */
-exports.getPipelineMonthly = async (req, res) => {
-    try {
-        const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonth = now.getMonth() + 1; // 1..12
-
-        // Year filter (default = current). Archive years return all 12 months.
-        const reqYear = parseInt(req.query.year, 10);
-        const year = Number.isFinite(reqYear) ? reqYear : currentYear;
-        const isArchive = year < currentYear;
-        const isFuture = year > currentYear;
-
-        // Determine [start, end] month range:
-        //  - Current year: from current month → December
-        //  - Past year (archive): full Jan → December
-        //  - Future year: full Jan → December (rare; for forward planning)
-        const startMonth = (year === currentYear) ? currentMonth : 1;
-        const endMonth = 12;
-
-        const { rows } = await db.query(`
-            WITH months AS (
-                SELECT generate_series(
-                    make_date($1::int, $2::int, 1),
-                    make_date($1::int, $3::int, 1),
-                    INTERVAL '1 month'
-                ) AS month_start
-            ),
-            cust AS (
-                SELECT
-                    DATE_TRUNC('month', created_at) AS month_start,
-                    COUNT(*) FILTER (WHERE status = 'Completed') AS sukses,
-                    COUNT(*) FILTER (WHERE status IN ('New','Contacted','Follow Up')) AS active,
-                    COUNT(*) FILTER (WHERE status = 'Inactive') AS lost,
-                    COUNT(*) AS total
-                FROM customers
-                WHERE EXTRACT(YEAR FROM created_at) = $1
-                GROUP BY DATE_TRUNC('month', created_at)
-            ),
-            omz AS (
-                SELECT
-                    DATE_TRUNC('month', created_at) AS month_start,
-                    COALESCE(SUM(harga * COALESCE(qty, 1)), 0) AS omzet
-                FROM purchases
-                WHERE EXTRACT(YEAR FROM created_at) = $1
-                GROUP BY DATE_TRUNC('month', created_at)
-            )
-            SELECT
-                TO_CHAR(m.month_start, 'YYYY-MM') AS bulan,
-                TO_CHAR(m.month_start, 'Mon YYYY') AS label,
-                COALESCE(c.sukses, 0)::int AS sukses,
-                COALESCE(c.active, 0)::int AS active,
-                COALESCE(c.lost, 0)::int AS lost,
-                COALESCE(c.total, 0)::int AS total,
-                COALESCE(o.omzet, 0) AS omzet
-            FROM months m
-            LEFT JOIN cust c ON c.month_start = m.month_start
-            LEFT JOIN omz o ON o.month_start = m.month_start
-            ORDER BY m.month_start ASC
-        `, [year, startMonth, endMonth]);
-
-        // List all years that have data (for year selector)
-        const { rows: yearsRows } = await db.query(`
-            SELECT DISTINCT EXTRACT(YEAR FROM created_at)::int AS year
-            FROM customers
-            WHERE created_at IS NOT NULL
-            ORDER BY year DESC
-        `);
-        const availableYears = yearsRows.map(r => r.year);
-        if (!availableYears.includes(currentYear)) availableYears.unshift(currentYear);
-
-        res.json({
-            success: true,
-            data: rows,
-            meta: {
-                year,
-                currentYear,
-                currentMonth,
-                isArchive,
-                isFuture,
-                availableYears
-            }
-        });
-    } catch (error) {
-        console.error('❌ Pipeline monthly error:', error);
-        res.status(500).json({ success: false, message: 'Gagal mengambil data pipeline' });
     }
 };
 
@@ -557,6 +458,13 @@ exports.updateCustomer = async (req, res) => {
         }
 
         const sets = Object.keys(fields).map((key, idx) => `${key} = $${idx + 1}`);
+        // Admin conversion follows the same first-purchase rule as the form.
+        // Historical purchases take precedence; an established date never moves.
+        if (fields.tipe === 'Belanja') {
+            sets.push(`first_purchase_at = COALESCE(first_purchase_at,
+                (SELECT MIN(p.created_at) AT TIME ZONE 'UTC' FROM purchases p WHERE p.customer_id = customers.id), NOW())`);
+        }
+        sets.push('google_contact_synced = FALSE');
         params.push(id);
 
         const { rowCount } = await db.query(
@@ -570,6 +478,7 @@ exports.updateCustomer = async (req, res) => {
 
         const { rows } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
         res.json({ success: true, message: 'Customer berhasil diperbarui', data: rows[0] });
+        googleService.syncCustomerContactName(rows[0].whatsapp).catch(error => console.warn('[Admin contact] sync failed:', error.message));
     } catch (error) {
         console.error('❌ Update customer error:', error);
         res.status(500).json({ success: false, message: 'Gagal memperbarui customer' });
@@ -652,21 +561,25 @@ exports.saveCustomerPurchases = async (req, res) => {
                     : 1;
 
                 await client.query(
-                    `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, created_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
                     [id, purchase.merk_unit || null, purchase.tipe_unit || null, parsedHarga, parsedQty,
                      purchase.nama_sales || null, purchase.metode_pembayaran || null, purchase.source || null]
                 );
             }
 
             if (remainingPurchases > 0) {
+                await client.query(`UPDATE customers SET tipe = 'Belanja',
+                    first_purchase_at = COALESCE(first_purchase_at,
+                        (SELECT MIN(p.created_at) AT TIME ZONE 'UTC' FROM purchases p WHERE p.customer_id = customers.id)),
+                    google_contact_synced = FALSE WHERE id = $1`, [id]);
                 if (inserts.length > 0) {
                     await client.query(
                         `UPDATE customers
-                         SET wa_sent = FALSE,
+                         SET wa_sent = CASE WHEN wa_sent IS NULL THEN NULL ELSE FALSE END,
                              status = 'Completed',
                              updated_at = NOW()
-                         WHERE id = $1 AND wa_sent IS NOT NULL`,
+                         WHERE id = $1`,
                         [id]
                     );
                 } else {
@@ -708,6 +621,7 @@ exports.saveCustomerPurchases = async (req, res) => {
 
         // Non-critical post-commit sync — failures logged but don't block response
         try { await _syncCustomerSummary(id); } catch (e) { console.warn('[Purchase] _syncCustomerSummary failed:', e.message); }
+        googleService.syncCustomerContactName(customerPhone).catch(error => console.warn('[Purchase contact] sync failed:', error.message));
         try { await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases); } catch (e) { console.warn('[Purchase] _trimQueue failed:', e.message); }
 
         const { rows: updatedCustomer } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);

@@ -142,7 +142,8 @@ router.post('/admin/reset', resetLimiter, adminController.resetPassword);
 
 // Dashboard statistics
 router.get('/admin/stats', authMiddleware, adminController.getStats);
-router.get('/admin/pipeline/monthly', authMiddleware, adminController.getPipelineMonthly);
+router.get('/admin/pipeline/monthly', authMiddleware, require('../controllers/pipelineController').getPipelineMonthly);
+router.get('/admin/pipeline/detail', authMiddleware, require('../controllers/pipelineController').getPipelineMonthDetail);
 
 // Customers
 router.get('/admin/customers', authMiddleware, adminController.getCustomers);

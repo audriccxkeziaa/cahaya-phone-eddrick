@@ -2,8 +2,8 @@
 
 Nama pada Google Contacts yang terhubung mengikuti aturan berikut:
 
-- Belum pernah belanja/submit form: `customer - DD/MM/YYYY`, sesuai tanggal **chat terakhir** dalam WITA/Gorontalo (`Asia/Makassar`, UTC+8).
-- Contoh: chat 18 November menjadi `customer - 18/11/2026`; chat lagi 19 November menjadi `customer - 19/11/2026`. Tanggal hanya maju ketika ada chat baru, bukan otomatis saat tengah malam. Pesan lama yang terlambat masuk tidak memundurkan tanggal.
+- Belum pernah belanja/submit form: `customer - DD/MM/YYYY`, sesuai tanggal **chat pertama** dalam WITA/Gorontalo (`Asia/Makassar`, UTC+8).
+- Contoh: chat 18 November menjadi `customer - 18/11/2026`; chat lagi 19 November tetap `customer - 18/11/2026`. Waktu chat terakhir tetap dicatat terpisah untuk monitoring. Tanggal kontak tetap memakai waktu pertama kali customer tercatat, termasuk ketika ada pesan lama yang terlambat masuk.
 - Submit form pertama: nomor yang sama menjadi `Belanja`, dan nama kontak menjadi `nama form - DD/MM/YYYY`, memakai tanggal **pembelian pertama**. Contoh: `Budi - 18/11/2026`.
 - Chat setelah belanja maupun submit form ulang tidak mengubah tanggal pembelian pertama. Nama mengikuti nama dari form, tanpa menambahkan tanggal berulang. Nama profil WA tidak dipakai.
 - Kontak yang tersimpan dengan nama manual/lama (misalnya `Ilyas`) juga diganti sesuai aturan tersebut. Nama pembeli dalam database tetap polos agar sapaan pesan tidak ikut memuat tanggal.
@@ -18,7 +18,7 @@ Semua proses chat, form, dan retry menggunakan satu jalur sinkronisasi dengan an
 
 Deploy backend dan admin. Migrasi menambahkan `customers.first_purchase_at` dan mengisi pembeli lama dari purchase paling awal yang tersimpan. Backend persistent juga menjalankan migrasi kontak yang idempotent **sebelum menerima request**; jalankan `npm --prefix backend run migrate` untuk deployment yang tidak memakai startup persistent (misalnya Vercel). Tidak ada perubahan wa-bridge pada rilis ini. Pastikan Google Contacts pada admin terhubung ke akun Google yang juga disinkronkan ke kontak HP WhatsApp toko. Perubahan di Google Contacts masih perlu disinkronkan oleh perangkat sebelum nama di WhatsApp terlihat berubah.
 
-Uji dengan satu nomor: chat pertama → chat hari berikutnya (tanggal berubah) → submit form dengan nomor yang sama (nama + tanggal beli pertama) → chat lagi → submit form ulang (tanggal beli tetap). Periksa kontak Google dan nama di WhatsApp. Uji pergantian hari WITA pada 23:59:59 dan 00:00:00, setara 15:59:59 dan 16:00:00 UTC.
+Uji dengan satu nomor: chat pertama → chat hari berikutnya (tanggal tetap) → submit form dengan nomor yang sama (nama + tanggal beli pertama) → chat lagi → submit form ulang (tanggal beli tetap). Periksa kontak Google dan nama di WhatsApp. Uji pergantian hari WITA pada 23:59:59 dan 00:00:00, setara 15:59:59 dan 16:00:00 UTC.
 
 ## Memperbaiki kontak lama
 
@@ -51,3 +51,17 @@ npm --prefix backend test
 ```
 
 Tes memakai People API/WhatsApp tiruan serta PostgreSQL lokal di memori melalui PGlite (dependency khusus development), tanpa membaca `.env` atau menghubungi layanan asli. Cakupan termasuk chat pertama/ulang, form ulang, pembelian pertama tanpa produk, migration/backfill, upsert nomor yang sama, tengah malam WITA, empat zona waktu database, zona waktu server berbeda, metadata update, pesan duplikat/terlambat, kegagalan API, dan chat/form bersamaan. Akun Google dan tampilan kontak WhatsApp deployment tetap perlu diverifikasi di environment toko.
+
+Migrasi juga memperbaiki label Chat Only lama memakai `customers.created_at` (chat pertama) dan menandainya pending untuk sinkronisasi. Waktu chat terakhir tidak berubah.
+
+Perubahan nama/konversi menjadi Belanja dari admin juga menandai kontak pending dan menjalankan sinkronisasi. Pembelian yang ditambahkan lewat admin mengisi tanggal beli pertama hanya jika belum terisi; edit, pembelian ulang, maupun penghapusan riwayat tidak mengganti tanggal tersebut.
+
+## Monitoring bulanan dan tampilan Natal
+
+Laporan Sukses dan Omzet menampilkan Januari–Desember pada setiap tahun, termasuk bulan kosong. Panah tahun menampilkan tahun dari data customer maupun pembelian. Transaksi sukses dihitung dari catatan `purchases`, bukan jumlah customer berstatus Completed; pembelian ulang masuk bulan tanggal belanjanya dalam WITA. Customer belanja adalah jumlah customer unik pada bulan tersebut. Customer baru adalah jumlah registrasi, ditampilkan terpisah tanpa membagi transaksi ulang dengan registrasi untuk membuat rate.
+
+Klik nama bulan untuk melihat tanggal/jam WITA, customer, nomor WA, produk, jumlah unit, subtotal, sales, dan metode pembayaran. Detail berisi maksimal 25 transaksi per halaman; ringkasan omzet/customer/unit tetap mencakup seluruh bulan. Membuka ulang laporan mengambil data baru agar koreksi transaksi terlihat. Di HP, tabel bisa digeser untuk melihat kolom berikutnya.
+
+Verifikasi deployment: coba customer lama yang belanja pada dua bulan berbeda dan transaksi pada batas 23:59:59/00:00:00 WITA; cocokkan omzet ringkasan dengan detail. Uji kedua tombol kontak, termasuk kegagalan sebagian, sambungkan ulang akun Google bila kredensial dicabut, lalu retry. Tes lokal memakai Google/WhatsApp tiruan; hasil pada akun toko perlu diperiksa sesudah deploy.
+
+Aksen Natal merah/hijau/emas tampil pada form customer, login admin, dan dashboard selama November–Desember mengikuti WITA. Bulan lain menggunakan tampilan reguler. Service worker admin diperbarui agar aset JS/CSS baru ikut dimuat.

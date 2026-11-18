@@ -52,6 +52,17 @@
     --duration-slow: 0.8s;
 }
 
+.christmas-greeting { display: none; }
+.christmas-season { --bg-page: #f4f5ef; --gold: #b99850; }
+.christmas-season .bg-pattern { background-image: radial-gradient(circle at 15% 10%, rgba(38, 89, 60, .09), transparent 45%), radial-gradient(circle at 80% 60%, rgba(185, 152, 80, .10), transparent 40%); }
+.christmas-season .container::before { height: 4px; background: linear-gradient(90deg, #174c3b, #b99850, #b91c1c, #b99850, #174c3b); }
+.christmas-season .header { background: linear-gradient(180deg, #edf4ed 0%, #fffdf8 100%); }
+.christmas-season .christmas-greeting { display: block; margin: 24px auto 0; max-width: 340px; color: #235640; font-size: 13px; line-height: 1.8; }
+.christmas-greeting > span { color: #9d7a33; margin: 0 3px; }
+.christmas-greeting > small { display: block; font-size: 10px; letter-spacing: .05em; color: #667153; margin-top: 3px; }
+.christmas-season .section-number { color: #27563f; background: #edf4ed; border-color: #dae5d6; }
+.christmas-season .brand-icon { box-shadow: 0 8px 24px rgba(71, 88, 45, .18), 0 0 0 5px #e0e8d8; }
+
 /* ============================================
    RESET & BASE
    ============================================ */

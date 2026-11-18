@@ -192,7 +192,7 @@ class GoogleContactsService {
 
     /**
      * All callers (incoming chat, form submission, and retry) use current DB data.
-     * Chat Only follows the latest chat. Belanja keeps the first purchase date.
+     * Chat Only keeps the first chat. Belanja keeps the first purchase date.
      */
     syncCustomerContactName(phone) {
         const cleanPhone = sanitizePhone(phone);

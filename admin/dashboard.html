@@ -47,6 +47,7 @@
 
     <!-- Main Content -->
     <main class="main">
+        <div class="christmas-greeting christmas-admin"><span class="christmas-star" aria-hidden="true">✦</span><div><strong>Semangat Natal di Cahaya Phone</strong><small>Layani dengan hangat, pantau setiap cerita belanja.</small></div><span class="christmas-season-label">Christmas Season</span></div>
         <!-- Dashboard Page -->
         <div id="dashboardPage" class="page active">
 
@@ -355,7 +356,7 @@
                         <button id="googleResyncBtn" class="btn-small" style="background:rgba(34,197,94,0.08);color:#16a34a;border:1px solid rgba(34,197,94,0.2);display:none;" onclick="resyncGoogleContacts()">Sync Kontak Gagal</button>
                         <button id="googleResyncAllBtn" class="btn-small" style="background:rgba(34,197,94,0.08);color:#16a34a;border:1px solid rgba(34,197,94,0.2);display:none;" onclick="resyncGoogleContacts(true)">Perbarui Semua Nama Kontak</button>
                     </div>
-                    <div id="googleResyncResult" style="margin-top:10px;font-size:13px;color:#5C534B;display:none;"></div>
+                    <div id="googleResyncResult" role="status" aria-live="polite" style="margin-top:10px;font-size:13px;color:#5C534B;display:none;"></div>
                 </div>
             </div>
 
@@ -788,11 +789,11 @@
     </div>
 
     <!-- Pipeline Detail Modal -->
-    <div id="pipelineModal" class="modal">
-        <div class="modal-content" style="max-width:600px;">
+    <div id="pipelineModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="pipelineModalTitle">
+        <div class="modal-content" style="max-width:960px;">
             <div class="modal-header">
                 <h3 id="pipelineModalTitle">Detail</h3>
-                <button class="modal-close" onclick="closePipelineModal()">&times;</button>
+                <button class="modal-close" aria-label="Tutup laporan bulanan" onclick="closePipelineModal()">&times;</button>
             </div>
             <div id="pipelineModalBody" class="modal-body">
             </div>
@@ -813,6 +814,7 @@
     </div>
 
     <script src="/config.js"></script>
+    <script src="pipeline.js"></script>
     <script src="admin.js"></script>
     <script>
         if ('serviceWorker' in navigator) {

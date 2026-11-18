@@ -4,7 +4,7 @@
 //
 // ATURAN EMAS:
 // - Chat manual (Skenario B): HANYA save DB + Google Contact
-//   Format: "customer - DD/MM/YYYY" (chat terakhir, WITA). TIDAK kirim auto-reply.
+//   Format: "customer - DD/MM/YYYY" (chat pertama, WITA). TIDAK kirim auto-reply.
 // - Auto-reply HANYA dari formController (Skenario A).
 //
 // ATURAN CUSTOMER:
@@ -119,7 +119,7 @@ exports.handleIncomingMessage = async (data) => {
                 `UPDATE customers SET status = CASE WHEN tipe = 'Belanja' THEN status ELSE $1 END,
                     last_incoming_message_at = GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC'),
                     nama_lengkap = CASE WHEN tipe = 'Chat Only' THEN 'customer - ' ||
-                        TO_CHAR(GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC')
+                        TO_CHAR(created_at
                             AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY')
                         ELSE nama_lengkap END,
                     google_contact_synced = FALSE
@@ -130,7 +130,7 @@ exports.handleIncomingMessage = async (data) => {
 
             console.log(`[WEBHOOK] Existing customer: ${customerId} (${existing[0].tipe}) — ${currentStatus} -> ${customerStatus}`);
 
-            // Chat Only follows the latest message date; buyers keep their form name.
+            // Chat Only keeps the first contact date; buyers keep their form name.
         } else {
             // ============================================
             // SKENARIO B: Customer BARU chat manual
@@ -158,7 +158,7 @@ exports.handleIncomingMessage = async (data) => {
                     updated_at = CURRENT_TIMESTAMP,
                     last_incoming_message_at = GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at),
                     nama_lengkap = CASE WHEN customers.tipe = 'Chat Only' THEN 'customer - ' ||
-                        TO_CHAR(GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at)
+                        TO_CHAR(customers.created_at
                             AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY')
                         ELSE customers.nama_lengkap END,
                     google_contact_synced = FALSE
