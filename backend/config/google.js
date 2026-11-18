@@ -7,7 +7,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { people: peopleApi } = require('@googleapis/people');
 const db = require('./database');
 const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
-const { formatContactDate } = require('../utils/contactUtils');
+const { formatContactDate, getCustomerContactName } = require('../utils/contactUtils');
 require('dotenv').config();
 
 class GoogleContactsService {
@@ -192,7 +192,7 @@ class GoogleContactsService {
 
     /**
      * All callers (incoming chat, form submission, and retry) use current DB data.
-     * Chat Only keeps the first contact date. Belanja uses the submitted name.
+     * Chat Only follows the latest chat. Belanja keeps the first purchase date.
      */
     syncCustomerContactName(phone) {
         const cleanPhone = sanitizePhone(phone);
@@ -211,24 +211,24 @@ class GoogleContactsService {
             const { rows } = await db.query(
                 `SELECT id, tipe, nama_lengkap, whatsapp, alamat, source,
                         merk_unit, tipe_unit, metode_pembayaran,
-                        created_at AT TIME ZONE 'UTC' AS first_contact_at
+                        created_at AT TIME ZONE 'UTC' AS first_contact_at,
+                        last_incoming_message_at AT TIME ZONE 'UTC' AS latest_chat_at,
+                        first_purchase_at
                  FROM customers WHERE whatsapp = $1 ORDER BY created_at ASC LIMIT 1`,
                 [phone]
             );
             if (rows.length === 0) return { success: false, skipped: true, error: 'Customer not found' };
             const customer = rows[0];
             await db.query('UPDATE customers SET google_contact_synced = FALSE WHERE id = $1', [customer.id]);
-            const isBuyer = customer.tipe === 'Belanja';
             const firstDate = formatContactDate(customer.first_contact_at);
-            const desiredName = isBuyer
-                ? customer.nama_lengkap.trim()
-                : `customer - ${firstDate}`;
+            const desiredName = getCustomerContactName(customer);
 
             const auth = await this.getAuthenticatedClient();
             if (!auth) return { success: false, error: 'Not connected' };
             const people = peopleApi({ version: 'v1', auth });
             const existing = await this.findContactByPhone(people, phone);
             const notes = [`Tipe: ${customer.tipe}`, `Kontak pertama: ${firstDate}`];
+            if (customer.first_purchase_at) notes.push(`Belanja pertama: ${formatContactDate(customer.first_purchase_at)}`);
             if (customer.merk_unit) notes.push(`Merk: ${customer.merk_unit}`);
             if (customer.tipe_unit) notes.push(`Unit: ${customer.tipe_unit}`);
             if (customer.metode_pembayaran) notes.push(`Bayar: ${customer.metode_pembayaran}`);
@@ -258,9 +258,8 @@ class GoogleContactsService {
                     personFields: 'names,phoneNumbers,metadata'
                 });
                 const existingName = current.names?.[0]?.displayName || current.names?.[0]?.givenName || '';
-                // A form submission is authoritative for this number. Incoming chat
-                // alone preserves human-given names in the phone's address book.
-                const canUpdateName = isBuyer || !existingName || this._isPlaceholderName(existingName);
+                // Every matched customer follows the CRM format, including contacts
+                // saved manually before their first chat. Buyers keep the form name.
                 const requestBody = {
                     etag: current.etag,
                     metadata: {
@@ -269,7 +268,7 @@ class GoogleContactsService {
                     biographies
                 };
                 const fields = ['biographies'];
-                if (canUpdateName && existingName !== desiredName) {
+                if (existingName !== desiredName) {
                     requestBody.names = [{ givenName: desiredName }];
                     fields.push('names');
                 }
@@ -282,7 +281,7 @@ class GoogleContactsService {
                     updatePersonFields: fields.join(','),
                     requestBody
                 });
-                action = canUpdateName ? 'updated' : 'preserved';
+                action = 'updated';
             }
 
             const resourceName = result.data.resourceName;
@@ -307,8 +306,11 @@ class GoogleContactsService {
     async _markSynced(phone, customer) {
         await db.query(
             `UPDATE customers SET google_contact_synced = TRUE
-             WHERE whatsapp = $1 AND nama_lengkap = $2 AND tipe = $3`,
-            [sanitizePhone(phone), customer.nama_lengkap, customer.tipe]
+             WHERE whatsapp = $1 AND nama_lengkap = $2 AND tipe = $3
+               AND (last_incoming_message_at AT TIME ZONE 'UTC') IS NOT DISTINCT FROM $4::timestamptz
+               AND first_purchase_at IS NOT DISTINCT FROM $5::timestamptz`,
+            [sanitizePhone(phone), customer.nama_lengkap, customer.tipe,
+                customer.latest_chat_at || null, customer.first_purchase_at || null]
         );
     }
 

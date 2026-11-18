@@ -12,6 +12,7 @@
     "dev": "node server.js"
   },
   "dependencies": {
+    "@googleapis/people": "^3.0.0",
     "@supabase/supabase-js": "^2.45.0",
     "axios": "^1.13.4",
     "bcryptjs": "^2.4.3",
@@ -21,7 +22,6 @@
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
     "express-rate-limit": "^8.3.2",
-    "@googleapis/people": "^3.0.0",
     "google-auth-library": "^9.0.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
@@ -36,5 +36,8 @@
     "webhook"
   ],
   "author": "Cahaya Phone",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16"
+  }
 }

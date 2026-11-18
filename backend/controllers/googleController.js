@@ -74,26 +74,30 @@ exports.resync = async (req, res) => {
             return res.status(400).json({ success: false, error: 'Google Contacts not connected. Please authenticate first via /api/google/auth' });
         }
 
-        const { rows: customers } = await db.query(`
-            SELECT id, nama_lengkap, whatsapp, alamat, tipe, source,
-                   merk_unit, tipe_unit, metode_pembayaran
-            FROM (
-                SELECT c.id, c.nama_lengkap, c.whatsapp, c.alamat, c.tipe, c.source,
-                       p.merk_unit, p.tipe_unit, p.metode_pembayaran,
-                       ROW_NUMBER() OVER (PARTITION BY c.id ORDER BY p.created_at DESC) AS rn
-                FROM customers c
-                LEFT JOIN purchases p ON p.customer_id = c.id
-                WHERE c.google_contact_synced = FALSE OR c.google_contact_synced IS NULL
-            ) sub
-            WHERE rn = 1
-            ORDER BY id
-        `);
+        // Older versions also marked preserved (incorrectly named) contacts as
+        // synced. An explicit full resync repairs those without changing retry's default.
+        const syncAll = req.body?.all === true;
+        const afterId = req.body?.afterId ?? 0;
+        if (!Number.isSafeInteger(afterId) || afterId < 0) {
+            return res.status(400).json({ success: false, error: 'Invalid contact cursor' });
+        }
+        // Keep each HTTP request short; the admin continues with the next cursor.
+        const batchSize = 5;
+        const { rows } = await db.query(`
+            SELECT id, nama_lengkap, whatsapp
+            FROM customers
+            WHERE whatsapp ~ '^62[0-9]{9,13}$' AND whatsapp !~ '^620*$'
+              AND id > $1
+              ${syncAll ? '' : 'AND (google_contact_synced = FALSE OR google_contact_synced IS NULL)'}
+            ORDER BY id LIMIT 6
+        `, [afterId]);
+        const customers = rows.slice(0, batchSize);
 
         let saved = 0, skipped = 0, failed = 0;
         const errors = [];
         const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
-        for (const c of customers) {
+        for (const [index, c] of customers.entries()) {
             try {
                 const result = await googleService.saveContact(c);
                 if (result.success) {
@@ -108,7 +112,7 @@ exports.resync = async (req, res) => {
                 failed++;
                 errors.push({ id: c.id, nama: c.nama_lengkap, error: err.message });
             }
-            await delay(1500);
+            if (index < customers.length - 1) await delay(1500);
         }
 
         console.log(`[Re-sync] Done: ${saved} saved, ${skipped} skipped, ${failed} failed out of ${customers.length} customers`);
@@ -118,6 +122,8 @@ exports.resync = async (req, res) => {
             saved,
             skipped,
             failed,
+            hasMore: rows.length > batchSize,
+            nextAfterId: customers.at(-1)?.id ?? afterId,
             errors: errors.slice(0, 20)
         });
     } catch (error) {

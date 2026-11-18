@@ -219,7 +219,7 @@ if (process.env.VERCEL) {
     const cron = require('node-cron');
     const PORT = process.env.PORT || 5000;
 
-    app.listen(PORT, async () => {
+    async function onListening() {
         console.log(`
 ========================================
   Cahaya Phone Backend (Baileys via wa-bridge)
@@ -237,8 +237,7 @@ if (process.env.VERCEL) {
             const col = await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name='customers' AND column_name='google_contact_synced'`);
             if (col.rows.length === 0) {
                 await db.query(`ALTER TABLE customers ADD COLUMN google_contact_synced BOOLEAN DEFAULT FALSE`);
-                await db.query(`UPDATE customers SET google_contact_synced = TRUE`);
-                console.log('[Boot] Added google_contact_synced column, marked all existing customers as synced');
+                console.log('[Boot] Added google_contact_synced column; existing customers await contact sync');
             }
         } catch (_) {}
         try {
@@ -413,5 +412,15 @@ if (process.env.VERCEL) {
         // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY unset or dep not installed,
         // so this is safe to ship before the env/replication are configured.
         require('./config/realtime').startRealtime();
+    }
+    async function startPersistentServer() {
+        // Complete the idempotent contact migration before accepting any form/chat.
+        const db = require('./config/database');
+        await require('./utils/contactSchema').ensureContactSchema(db);
+        app.listen(PORT, onListening);
+    }
+    startPersistentServer().catch(err => {
+        console.error('[Boot] Contact schema initialization failed:', err.message);
+        process.exit(1);
     });
 }

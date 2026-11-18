@@ -3932,6 +3932,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const disconnectBtn = document.getElementById('googleDisconnectBtn');
 
             const resyncBtn = document.getElementById('googleResyncBtn');
+            const resyncAllBtn = document.getElementById('googleResyncAllBtn');
             if (data.connected) {
                 indicator.style.background = '#16A34A';
                 statusText.textContent = 'Terhubung — kontak customer otomatis tersimpan ke Google Contacts';
@@ -3939,6 +3940,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 connectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'inline-block';
                 if (resyncBtn) resyncBtn.style.display = 'inline-block';
+                if (resyncAllBtn) resyncAllBtn.style.display = 'inline-block';
             } else {
                 indicator.style.background = '#DC2626';
                 statusText.textContent = 'Belum terhubung';
@@ -3946,6 +3948,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 connectBtn.style.display = 'inline-block';
                 disconnectBtn.style.display = 'none';
                 if (resyncBtn) resyncBtn.style.display = 'none';
+                if (resyncAllBtn) resyncAllBtn.style.display = 'none';
             }
         } catch (err) {
             console.warn('Google status check failed:', err);
@@ -3980,29 +3983,50 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     };
 
-    window.resyncGoogleContacts = async function() {
-        if (!confirm('Simpan ulang kontak customer yang gagal tersimpan ke Google Contacts? (hanya yang pending/gagal)')) return;
+    window.resyncGoogleContacts = async function(all = false) {
+        const confirmation = all
+            ? 'Perbarui semua nama kontak customer di Google Contacts? Sebelum belanja: customer - tanggal chat terakhir. Setelah belanja: nama form - tanggal pembelian pertama. Semua tanggal mengikuti WITA/Gorontalo. Proses ini bisa memakan waktu beberapa menit.'
+            : 'Simpan ulang kontak customer yang gagal tersimpan ke Google Contacts? (hanya yang pending/gagal)';
+        if (!confirm(confirmation)) return;
         const resultDiv = document.getElementById('googleResyncResult');
-        const btn = document.getElementById('googleResyncBtn');
-        btn.disabled = true;
+        const buttons = ['googleResyncBtn', 'googleResyncAllBtn'].map(id => document.getElementById(id));
+        const btn = buttons[all ? 1 : 0];
+        const originalLabel = btn.textContent;
+        buttons.forEach(button => { button.disabled = true; });
         btn.textContent = 'Syncing...';
         resultDiv.style.display = 'block';
-        resultDiv.textContent = 'Memproses kontak yang gagal tersimpan, mohon tunggu...';
+        resultDiv.textContent = all
+            ? 'Memperbarui semua nama kontak customer, mohon tunggu...'
+            : 'Memproses kontak yang gagal tersimpan, mohon tunggu...';
         try {
-            const data = await apiCall('/google/resync', { method: 'POST' });
-            if (data.total === 0) {
-                resultDiv.innerHTML = 'Tidak ada kontak yang pending — semua sudah tersimpan di Google Contacts.';
+            const totals = { total: 0, saved: 0, failed: 0, skipped: 0 };
+            let afterId = 0;
+            let hasMore;
+            do {
+                const data = await apiCall('/google/resync', {
+                    method: 'POST', body: JSON.stringify({ all, afterId })
+                });
+                if (!data || !data.success) {
+                    throw new Error(data?.error || data?.message || 'Tidak dapat menghubungi server. Silakan coba lagi.');
+                }
+                for (const key of Object.keys(totals)) totals[key] += data[key] || 0;
+                resultDiv.textContent = `Diproses: ${totals.total} kontak, ${totals.saved} tersimpan, ${totals.failed} gagal. Mohon tunggu...`;
+                hasMore = data.hasMore;
+                afterId = data.nextAfterId;
+            } while (hasMore);
+            if (totals.total === 0) {
+                resultDiv.textContent = all ? 'Tidak ada kontak customer yang dapat diperbarui.' : 'Tidak ada kontak yang pending.';
                 resultDiv.style.color = '#16a34a';
             } else {
-                resultDiv.innerHTML = `Selesai: <b>${data.saved}</b> tersimpan, <b>${data.failed}</b> gagal dari <b>${data.total}</b> kontak pending`;
-                resultDiv.style.color = data.failed > 0 ? '#DC2626' : '#16a34a';
+                resultDiv.textContent = `Selesai: ${totals.saved} tersimpan, ${totals.failed} gagal, ${totals.skipped} dilewati dari ${totals.total} kontak. Nama di WhatsApp akan mengikuti setelah kontak HP tersinkron.`;
+                resultDiv.style.color = totals.failed > 0 ? '#DC2626' : '#16a34a';
             }
         } catch (err) {
             resultDiv.textContent = 'Gagal re-sync: ' + err.message;
             resultDiv.style.color = '#DC2626';
         }
-        btn.disabled = false;
-        btn.textContent = 'Re-sync Kontak';
+        buttons.forEach(button => { button.disabled = false; });
+        btn.textContent = originalLabel;
     };
 
     // Check for Google OAuth redirect result

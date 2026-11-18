@@ -15,6 +15,7 @@ const { normalizeBrandAndModel } = require('../utils/brandUtils');
  */
 exports.submitForm = async (req, res) => {
     try {
+        const submittedAt = new Date().toISOString();
         const {
             nama, nama_lengkap, email, whatsapp, alamat, kota,
             nama_sales, merk_unit, tipe_unit, harga, qty,
@@ -141,13 +142,14 @@ exports.submitForm = async (req, res) => {
                     harga = $5, qty = $6, tanggal_lahir = $7, alamat = $8,
                     metode_pembayaran = $9, tahu_dari = $10, source = $11,
                     status = 'Completed', opted_in = $12, tipe = 'Belanja',
+                    first_purchase_at = COALESCE(first_purchase_at, $14::timestamptz),
                     google_contact_synced = FALSE, updated_at = NOW()
                 WHERE id = $13 RETURNING id`,
                 [
                     finalName, nama_sales || null, cleanMerk, cleanTipe,
                     parsedHarga, parsedQty, tanggal_lahir || null, fullAddress,
                     metode_pembayaran || null, tahu_dari || null, source,
-                    optedIn, existingCustomer[0].id
+                    optedIn, existingCustomer[0].id, submittedAt
                 ]
             );
             rows = result.rows;
@@ -156,8 +158,10 @@ exports.submitForm = async (req, res) => {
             const result = await db.query(
                 `INSERT INTO customers (
                     nama_lengkap, nama_sales, merk_unit, tipe_unit, harga, qty,
-                    tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status, opted_in, tipe
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Completed', $13, 'Belanja')
+                    tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status, opted_in, tipe,
+                    first_purchase_at, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Completed', $13, 'Belanja',
+                    $14::timestamptz, $14::timestamptz AT TIME ZONE 'UTC')
                 ON CONFLICT (whatsapp) WHERE whatsapp !~ '^620*$' DO UPDATE SET
                     nama_lengkap = EXCLUDED.nama_lengkap, nama_sales = EXCLUDED.nama_sales,
                     merk_unit = EXCLUDED.merk_unit, tipe_unit = EXCLUDED.tipe_unit,
@@ -165,12 +169,13 @@ exports.submitForm = async (req, res) => {
                     tanggal_lahir = EXCLUDED.tanggal_lahir, alamat = EXCLUDED.alamat,
                     metode_pembayaran = EXCLUDED.metode_pembayaran, tahu_dari = EXCLUDED.tahu_dari,
                     source = EXCLUDED.source, status = 'Completed', opted_in = EXCLUDED.opted_in,
-                    tipe = 'Belanja', google_contact_synced = FALSE, updated_at = NOW()
+                    tipe = 'Belanja', first_purchase_at = COALESCE(customers.first_purchase_at, EXCLUDED.first_purchase_at),
+                    google_contact_synced = FALSE, updated_at = NOW()
                 RETURNING id`,
                 [
                     finalName, nama_sales || null, cleanMerk, cleanTipe,
                     parsedHarga, parsedQty, tanggal_lahir || null, fullAddress,
-                    cleanPhone, metode_pembayaran || null, tahu_dari || null, source, optedIn
+                    cleanPhone, metode_pembayaran || null, tahu_dari || null, source, optedIn, submittedAt
                 ]
             );
             rows = result.rows;
@@ -189,10 +194,10 @@ exports.submitForm = async (req, res) => {
         let purchaseId = null;
         if (parsedHarga || cleanMerk || cleanTipe) {
             const { rows: pRows } = await db.query(
-                `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, wa_auto_dispatch, wa_enqueued)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+                `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, wa_auto_dispatch, wa_enqueued, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE, $10::timestamptz AT TIME ZONE 'UTC')
                  RETURNING id`,
-                [customerId, cleanMerk, cleanTipe, parsedHarga, parsedQty, nama_sales || null, metode_pembayaran || null, source, autoReplyEnabled]
+                [customerId, cleanMerk, cleanTipe, parsedHarga, parsedQty, nama_sales || null, metode_pembayaran || null, source, autoReplyEnabled, submittedAt]
             );
             purchaseId = pRows[0].id;
         }

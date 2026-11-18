@@ -237,6 +237,8 @@
       await client.query(`UPDATE customers SET tipe = 'Belanja' WHERE tipe IS NULL`);
       console.log('✅ opted_in column verified');
 
+      await require('./utils/contactSchema').ensureContactSchema(client);
+
       // Ensure catatan column exists (notes for Chat Only customers)
       console.log('Ensuring catatan column...');
       await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS catatan TEXT`);

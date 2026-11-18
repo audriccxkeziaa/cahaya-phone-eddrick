@@ -4,7 +4,7 @@
 //
 // ATURAN EMAS:
 // - Chat manual (Skenario B): HANYA save DB + Google Contact
-//   Format: "Customer - DD/MM/YYYY". TIDAK kirim auto-reply.
+//   Format: "customer - DD/MM/YYYY" (chat terakhir, WITA). TIDAK kirim auto-reply.
 // - Auto-reply HANYA dari formController (Skenario A).
 //
 // ATURAN CUSTOMER:
@@ -111,28 +111,26 @@ exports.handleIncomingMessage = async (data) => {
             customerId = existing[0].id;
             const currentStatus = existing[0].status;
 
-            if (['New', 'Inactive', 'Follow Up'].includes(currentStatus)) {
-                await db.query(
-                    `UPDATE customers SET status = $1,
-                        last_incoming_message_at = GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC')
-                     WHERE id = $2`,
-                    ['Contacted', customerId, messageTime]
-                );
-                customerStatus = 'Contacted';
-            } else {
-                await db.query(
-                    `UPDATE customers SET
-                        last_incoming_message_at = GREATEST(last_incoming_message_at, $2::timestamptz AT TIME ZONE 'UTC')
-                     WHERE id = $1`,
-                    [customerId, messageTime]
-                );
-                customerStatus = currentStatus;
-            }
+            customerStatus = ['New', 'Inactive', 'Follow Up'].includes(currentStatus)
+                ? 'Contacted' : currentStatus;
+            // Decide from the locked DB row, not the earlier SELECT: a concurrent
+            // form submission must never have its buyer name overwritten by chat.
+            const { rows: updated } = await db.query(
+                `UPDATE customers SET status = CASE WHEN tipe = 'Belanja' THEN status ELSE $1 END,
+                    last_incoming_message_at = GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC'),
+                    nama_lengkap = CASE WHEN tipe = 'Chat Only' THEN 'customer - ' ||
+                        TO_CHAR(GREATEST(last_incoming_message_at, $3::timestamptz AT TIME ZONE 'UTC')
+                            AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY')
+                        ELSE nama_lengkap END,
+                    google_contact_synced = FALSE
+                 WHERE id = $2 RETURNING status`,
+                [customerStatus, customerId, messageTime]
+            );
+            customerStatus = updated[0]?.status || customerStatus;
 
             console.log(`[WEBHOOK] Existing customer: ${customerId} (${existing[0].tipe}) — ${currentStatus} -> ${customerStatus}`);
 
-            // Nama Chat Only tetap "Customer - tanggal", tidak di-update dari pushname
-            // Nama Belanja dari form, juga tidak di-timpa
+            // Chat Only follows the latest message date; buyers keep their form name.
         } else {
             // ============================================
             // SKENARIO B: Customer BARU chat manual
@@ -158,7 +156,12 @@ exports.handleIncomingMessage = async (data) => {
                 VALUES ($1, $2, $3, 'New', 'Chat Only', $4::timestamptz AT TIME ZONE 'UTC', $4::timestamptz AT TIME ZONE 'UTC')
                 ON CONFLICT (whatsapp) WHERE whatsapp !~ '^620*$' DO UPDATE SET
                     updated_at = CURRENT_TIMESTAMP,
-                    last_incoming_message_at = GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at)
+                    last_incoming_message_at = GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at),
+                    nama_lengkap = CASE WHEN customers.tipe = 'Chat Only' THEN 'customer - ' ||
+                        TO_CHAR(GREATEST(customers.last_incoming_message_at, EXCLUDED.last_incoming_message_at)
+                            AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar', 'DD/MM/YYYY')
+                        ELSE customers.nama_lengkap END,
+                    google_contact_synced = FALSE
                 RETURNING id, status`,
                 [customerName, cleanPhone, source, messageTime]
             );
